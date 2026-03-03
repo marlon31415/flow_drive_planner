@@ -94,6 +94,7 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
             post_mode: int = 0,
             render: bool = False,
             video_dir: str = None,
+            emergency_brake_enabled: bool = True,
         ):
         assert device in ["cpu", "cuda"], f"device {device} not supported"
         if device == "cuda":
@@ -119,7 +120,7 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
 
         self._map_api: Optional[AbstractMap] = None
         self._route_roadblock_ids = None
-        self._trajectory_scorer = TrajectoryScorer()
+        self._trajectory_scorer = TrajectoryScorer(emergency_brake_enabled=emergency_brake_enabled)
 
         self._params = load_params(
             os.path.join(os.path.dirname(__file__), "..", "config", "config.yaml"))
@@ -224,7 +225,8 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
 
 
 class TrajectoryScorer:
-    def __init__(self):
+    def __init__(self, emergency_brake_enabled: bool = True):
+        self._emergency_brake_enabled = emergency_brake_enabled
         self._iteration: int = 0
         self._map_radius: int = 50  # [m]
         self._map_api: Optional[AbstractMap] = None
@@ -455,11 +457,12 @@ class TrajectoryScorer:
             self._map_api,
         )  # [S * B] where S = number of plans, B = batch size (1)
         # Apply brake if emergency is expected
-        trajectory = self._emergency_brake.brake_if_emergency(
-            ego_state, proposal_scores, self._scorer
-        )
-        if trajectory is not None:
-            ego_states_list = [trajectory.get_sampled_trajectory()] * len(ego_states_list)
+        if self._emergency_brake_enabled:
+            trajectory = self._emergency_brake.brake_if_emergency(
+                ego_state, proposal_scores, self._scorer
+            )
+            if trajectory is not None:
+                ego_states_list = [trajectory.get_sampled_trajectory()] * len(ego_states_list)
 
         self._iteration += 1
         return proposal_scores, ego_states_list
