@@ -10,3 +10,4 @@ flow_drive:
   post_mode: ???
   render: False
   video_dir: None
+  emergency_brake_enabled: True
