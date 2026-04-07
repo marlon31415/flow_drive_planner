@@ -1,8 +1,12 @@
 import torch
 
 
-def smooth_trajectories(actions: torch.Tensor, smoothing_method: str = "multi_pass",
-                       num_passes: int = 3, window_size: int = 5) -> torch.Tensor:
+def smooth_trajectories(
+    actions: torch.Tensor,
+    smoothing_method: str = "multi_pass",
+    num_passes: int = 3,
+    window_size: int = 5,
+) -> torch.Tensor:
     """
     Enhanced trajectory smoothing with multiple approaches.
     The first state is kept unchanged, only subsequent states are adjusted.
@@ -35,16 +39,18 @@ def smooth_trajectories(actions: torch.Tensor, smoothing_method: str = "multi_pa
 
     if smoothing_method == "multi_pass":
         smoothed_positions, smoothed_yaw = _multi_pass_smoothing(
-            positions, yaw, num_passes)
+            positions, yaw, num_passes
+        )
     elif smoothing_method == "gaussian":
         smoothed_positions, smoothed_yaw = _gaussian_smoothing(
-            positions, yaw, window_size)
+            positions, yaw, window_size
+        )
     elif smoothing_method == "adaptive":
-        smoothed_positions, smoothed_yaw = _adaptive_smoothing(
-            positions, yaw)
+        smoothed_positions, smoothed_yaw = _adaptive_smoothing(positions, yaw)
     elif smoothing_method == "savgol":
         smoothed_positions, smoothed_yaw = _savgol_smoothing(
-            positions, yaw, window_size)
+            positions, yaw, window_size
+        )
     else:
         raise ValueError(f"Unknown smoothing method: {smoothing_method}")
 
@@ -53,7 +59,9 @@ def smooth_trajectories(actions: torch.Tensor, smoothing_method: str = "multi_pa
     smoothed_yaw[:, 0] = yaw[:, 0]
 
     # Reconstruct the smoothed actions
-    smoothed_actions_flat = torch.cat([smoothed_positions, smoothed_yaw.unsqueeze(-1)], dim=-1)
+    smoothed_actions_flat = torch.cat(
+        [smoothed_positions, smoothed_yaw.unsqueeze(-1)], dim=-1
+    )
 
     smoothed_actions = smoothed_actions_flat.view(S, B, T, A)
 
@@ -63,8 +71,9 @@ def smooth_trajectories(actions: torch.Tensor, smoothing_method: str = "multi_pa
         return smoothed_actions
 
 
-def _multi_pass_smoothing(positions: torch.Tensor, yaw: torch.Tensor,
-                         num_passes: int = 3) -> tuple:
+def _multi_pass_smoothing(
+    positions: torch.Tensor, yaw: torch.Tensor, num_passes: int = 3
+) -> tuple:
     """Apply multiple passes of 3-point moving average for stronger smoothing."""
     smoothed_positions = positions.clone()
     smoothed_yaw = yaw.clone()
@@ -73,9 +82,9 @@ def _multi_pass_smoothing(positions: torch.Tensor, yaw: torch.Tensor,
         # Apply 3-point moving average to positions (vectorized)
         temp_positions = smoothed_positions.clone()
         temp_positions[:, 1:-1] = (
-            0.25 * smoothed_positions[:, :-2] +
-            0.5 * smoothed_positions[:, 1:-1] +
-            0.25 * smoothed_positions[:, 2:]
+            0.25 * smoothed_positions[:, :-2]
+            + 0.5 * smoothed_positions[:, 1:-1]
+            + 0.25 * smoothed_positions[:, 2:]
         )
         smoothed_positions = temp_positions
 
@@ -90,8 +99,9 @@ def _multi_pass_smoothing(positions: torch.Tensor, yaw: torch.Tensor,
     return smoothed_positions, smoothed_yaw
 
 
-def _gaussian_smoothing(positions: torch.Tensor, yaw: torch.Tensor,
-                       window_size: int = 5) -> tuple:
+def _gaussian_smoothing(
+    positions: torch.Tensor, yaw: torch.Tensor, window_size: int = 5
+) -> tuple:
     """Apply Gaussian smoothing with configurable window size."""
     # Ensure window_size is odd
     if window_size % 2 == 0:
@@ -110,13 +120,15 @@ def _gaussian_smoothing(positions: torch.Tensor, yaw: torch.Tensor,
     # Apply Gaussian smoothing to positions
     half_window = window_size // 2
     for i in range(half_window, positions.shape[1] - half_window):
-        window_positions = positions[:, i - half_window:i + half_window + 1]  # [S*B, window_size, 2]
+        window_positions = positions[
+            :, i - half_window : i + half_window + 1
+        ]  # [S*B, window_size, 2]
         weighted_positions = window_positions * gaussian_kernel.view(1, -1, 1)
         smoothed_positions[:, i] = weighted_positions.sum(dim=1)
 
     # Apply Gaussian smoothing to yaw with angle wrapping
     for i in range(half_window, yaw.shape[1] - half_window):
-        window_yaw = yaw[:, i - half_window:i + half_window + 1]  # [S*B, window_size]
+        window_yaw = yaw[:, i - half_window : i + half_window + 1]  # [S*B, window_size]
         yaw_complex = torch.exp(1j * window_yaw)  # [S*B, window_size]
         weighted_complex = yaw_complex * gaussian_kernel.view(1, -1)
         avg_complex = weighted_complex.sum(dim=1)  # [S*B]
@@ -156,10 +168,9 @@ def _adaptive_smoothing(positions: torch.Tensor, yaw: torch.Tensor) -> tuple:
             adaptive_weight = adaptive_weight.unsqueeze(-1)  # [S*B, 1]
 
             # Apply weighted smoothing
-            smoothed_positions[:, i] = (
-                (1 - adaptive_weight) * positions[:, i] +
-                adaptive_weight * 0.5 * (positions[:, i - 1] + positions[:, i + 1])
-            )
+            smoothed_positions[:, i] = (1 - adaptive_weight) * positions[
+                :, i
+            ] + adaptive_weight * 0.5 * (positions[:, i - 1] + positions[:, i + 1])
 
             # Handle yaw with angle wrapping
             prev_yaw = yaw[:, i - 1]
@@ -172,14 +183,17 @@ def _adaptive_smoothing(positions: torch.Tensor, yaw: torch.Tensor) -> tuple:
             next_complex = torch.exp(1j * next_yaw)
 
             avg_complex = 0.5 * (prev_complex + next_complex)
-            smoothed_complex = (1 - adaptive_weight.squeeze(-1)) * curr_complex + adaptive_weight.squeeze(-1) * avg_complex
+            smoothed_complex = (
+                1 - adaptive_weight.squeeze(-1)
+            ) * curr_complex + adaptive_weight.squeeze(-1) * avg_complex
             smoothed_yaw[:, i] = torch.angle(smoothed_complex)
 
     return smoothed_positions, smoothed_yaw
 
 
-def _savgol_smoothing(positions: torch.Tensor, yaw: torch.Tensor,
-                     window_size: int = 5) -> tuple:
+def _savgol_smoothing(
+    positions: torch.Tensor, yaw: torch.Tensor, window_size: int = 5
+) -> tuple:
     """Apply Savitzky-Golay smoothing (polynomial fitting)."""
     # Ensure window_size is odd
     if window_size % 2 == 0:
@@ -191,25 +205,40 @@ def _savgol_smoothing(positions: torch.Tensor, yaw: torch.Tensor,
     # Create Savitzky-Golay coefficients for polynomial order 2
     # This is a simplified version - for window_size=5, these are the coefficients
     if window_size == 5:
-        coeffs = torch.tensor([-3, 12, 17, 12, -3], device=positions.device, dtype=torch.float32) / 35
+        coeffs = (
+            torch.tensor(
+                [-3, 12, 17, 12, -3], device=positions.device, dtype=torch.float32
+            )
+            / 35
+        )
     elif window_size == 7:
-        coeffs = torch.tensor([-2, 3, 6, 7, 6, 3, -2], device=positions.device, dtype=torch.float32) / 21
+        coeffs = (
+            torch.tensor(
+                [-2, 3, 6, 7, 6, 3, -2], device=positions.device, dtype=torch.float32
+            )
+            / 21
+        )
     else:
         # Fall back to simple moving average for other window sizes
-        coeffs = torch.ones(window_size, device=positions.device, dtype=torch.float32) / window_size
+        coeffs = (
+            torch.ones(window_size, device=positions.device, dtype=torch.float32)
+            / window_size
+        )
 
     smoothed_positions = positions.clone()
     smoothed_yaw = yaw.clone()
 
     # Apply Savitzky-Golay smoothing to positions
     for i in range(half_window, positions.shape[1] - half_window):
-        window_positions = positions[:, i - half_window:i + half_window + 1]  # [S*B, window_size, 2]
+        window_positions = positions[
+            :, i - half_window : i + half_window + 1
+        ]  # [S*B, window_size, 2]
         weighted_positions = window_positions * coeffs.view(1, -1, 1)
         smoothed_positions[:, i] = weighted_positions.sum(dim=1)
 
     # Apply Savitzky-Golay smoothing to yaw with angle wrapping
     for i in range(half_window, yaw.shape[1] - half_window):
-        window_yaw = yaw[:, i - half_window:i + half_window + 1]  # [S*B, window_size]
+        window_yaw = yaw[:, i - half_window : i + half_window + 1]  # [S*B, window_size]
         yaw_complex = torch.exp(1j * window_yaw)  # [S*B, window_size]
         weighted_complex = yaw_complex * coeffs.view(1, -1)
         avg_complex = weighted_complex.sum(dim=1)  # [S*B]
@@ -218,7 +247,9 @@ def _savgol_smoothing(positions: torch.Tensor, yaw: torch.Tensor,
     return smoothed_positions, smoothed_yaw
 
 
-def smooth_trajectories_preset(actions: torch.Tensor, preset: str = "default") -> torch.Tensor:
+def smooth_trajectories_preset(
+    actions: torch.Tensor, preset: str = "default"
+) -> torch.Tensor:
     """
     Apply trajectory smoothing with predefined presets for common use cases.
 
@@ -239,18 +270,24 @@ def smooth_trajectories_preset(actions: torch.Tensor, preset: str = "default") -
     }
 
     if preset not in preset_configs:
-        raise ValueError(f"Unknown preset: {preset}. Available presets: {list(preset_configs.keys())}")
+        raise ValueError(
+            f"Unknown preset: {preset}. Available presets: {list(preset_configs.keys())}"
+        )
 
     config = preset_configs[preset]
     return smooth_trajectories(actions, **config)
 
 
-def bound_speed_and_acceleration(actions: torch.Tensor, ego_state_unnormalized: torch.Tensor, speed_limits: torch.Tensor) -> torch.Tensor:
+def bound_speed_and_acceleration(
+    actions: torch.Tensor,
+    ego_state_unnormalized: torch.Tensor,
+    speed_limits: torch.Tensor,
+) -> torch.Tensor:
     """
     Vectorized implementation of acceleration and velocity bounding for trajectory points.
     """
     # Constants
-    max_accel = 2.2    # m/s^2
+    max_accel = 2.2  # m/s^2
     min_accel = -3.8  # m/s^2
     dt = 0.1
     eps = 1e-6
@@ -263,12 +300,12 @@ def bound_speed_and_acceleration(actions: torch.Tensor, ego_state_unnormalized: 
     traj_pos = actions[:, :, :2]  # [SB, T, 2]
 
     # Expand ego state and speed limits
-    ego_pos = ego_state_unnormalized[:, :2].repeat(S, 1)          # [SB, 2]
-    ego_vel = ego_state_unnormalized[:, 4:6].repeat(S, 1)         # [SB, 2]
-    ego_speed = torch.norm(ego_vel, dim=1)                        # [SB]
+    ego_pos = ego_state_unnormalized[:, :2].repeat(S, 1)  # [SB, 2]
+    ego_vel = ego_state_unnormalized[:, 4:6].repeat(S, 1)  # [SB, 2]
+    ego_speed = torch.norm(ego_vel, dim=1)  # [SB]
     if speed_limits.dim() == 1:
-        speed_limits = speed_limits.unsqueeze(0).expand(S, -1)    # [S, B]
-    speed_limits = speed_limits.reshape(SB)                       # [SB]
+        speed_limits = speed_limits.unsqueeze(0).expand(S, -1)  # [S, B]
+    speed_limits = speed_limits.reshape(SB)  # [SB]
 
     # Build full positions [SB, T+1, 2]
     full_pos = torch.cat([ego_pos.unsqueeze(1), traj_pos], dim=1)  # [SB, T+1, 2]
@@ -280,8 +317,8 @@ def bound_speed_and_acceleration(actions: torch.Tensor, ego_state_unnormalized: 
 
         for t in range(T):
             # Compute previous and current positions
-            prev_pos = full_pos[:, t]     # [SB, 2]
-            curr_pos = full_pos[:, t+1]   # [SB, 2]
+            prev_pos = full_pos[:, t]  # [SB, 2]
+            curr_pos = full_pos[:, t + 1]  # [SB, 2]
 
             # Compute current segment velocity and speed
             curr_vel = (curr_pos - prev_pos) / dt  # [SB, 2]
@@ -310,9 +347,11 @@ def bound_speed_and_acceleration(actions: torch.Tensor, ego_state_unnormalized: 
                     target_speed = torch.where(
                         speed_accel > max_accel,
                         prev_speed + max_accel * dt,
-                        torch.where(speed_accel < min_accel,
-                                    prev_speed + min_accel * dt,
-                                    curr_speed)
+                        torch.where(
+                            speed_accel < min_accel,
+                            prev_speed + min_accel * dt,
+                            curr_speed,
+                        ),
                     ).clamp(min=0.1)
 
                     # Handle vector acceleration violations
@@ -324,7 +363,7 @@ def bound_speed_and_acceleration(actions: torch.Tensor, ego_state_unnormalized: 
                     scale_factor = torch.where(
                         vel_change_mag > max_vel_change,
                         max_vel_change / (vel_change_mag + eps),
-                        torch.ones_like(vel_change_mag)
+                        torch.ones_like(vel_change_mag),
                     )
 
                     # Apply scaling only where vector acceleration is violated
@@ -336,26 +375,28 @@ def bound_speed_and_acceleration(actions: torch.Tensor, ego_state_unnormalized: 
                     final_target_speed = torch.where(
                         vector_violated & (vector_target_speed < target_speed),
                         vector_target_speed,
-                        target_speed
+                        target_speed,
                     ).clamp(min=0.1)
 
                     # Direction: use limited velocity direction when vector acceleration is violated
                     speed_direction = curr_vel / (curr_speed.unsqueeze(1) + eps)
-                    vector_direction = target_vel / (torch.norm(target_vel, dim=1, keepdim=True) + eps)
+                    vector_direction = target_vel / (
+                        torch.norm(target_vel, dim=1, keepdim=True) + eps
+                    )
                     direction = torch.where(
-                        vector_violated.unsqueeze(1),
-                        vector_direction,
-                        speed_direction
+                        vector_violated.unsqueeze(1), vector_direction, speed_direction
                     )
 
                     # Update position
-                    corrected_pos = prev_pos + direction * final_target_speed.unsqueeze(1) * dt
+                    corrected_pos = (
+                        prev_pos + direction * final_target_speed.unsqueeze(1) * dt
+                    )
                     delta = corrected_pos - curr_pos
-                    full_pos[:, t+1:] += delta.unsqueeze(1)
+                    full_pos[:, t + 1 :] += delta.unsqueeze(1)
 
             else:
                 # For other points, check speed acceleration only
-                prev_vel = (prev_pos - full_pos[:, t-1]) / dt  # [SB, 2]
+                prev_vel = (prev_pos - full_pos[:, t - 1]) / dt  # [SB, 2]
                 prev_speed = torch.norm(prev_vel, dim=1)  # [SB]
 
                 # Speed acceleration
@@ -369,18 +410,22 @@ def bound_speed_and_acceleration(actions: torch.Tensor, ego_state_unnormalized: 
                     target_speed = torch.where(
                         speed_accel > max_accel,
                         prev_speed + max_accel * dt,
-                        torch.where(speed_accel < min_accel,
-                                    prev_speed + min_accel * dt,
-                                    curr_speed)
+                        torch.where(
+                            speed_accel < min_accel,
+                            prev_speed + min_accel * dt,
+                            curr_speed,
+                        ),
                     ).clamp(min=0.1)
 
                     # Direction from previous to current point
                     direction = curr_vel / (curr_speed.unsqueeze(1) + eps)
 
                     # Update position
-                    corrected_pos = prev_pos + direction * target_speed.unsqueeze(1) * dt
+                    corrected_pos = (
+                        prev_pos + direction * target_speed.unsqueeze(1) * dt
+                    )
                     delta = corrected_pos - curr_pos
-                    full_pos[:, t+1:] += delta.unsqueeze(1)
+                    full_pos[:, t + 1 :] += delta.unsqueeze(1)
 
         # If no violations were fixed, we're done
         if violations_fixed == 0:
@@ -393,7 +438,7 @@ def bound_speed_and_acceleration(actions: torch.Tensor, ego_state_unnormalized: 
 
         for t in range(T):
             prev_pos = full_pos[:, t]
-            curr_pos = full_pos[:, t+1]
+            curr_pos = full_pos[:, t + 1]
             delta_pos = curr_pos - prev_pos
             seg_dist = torch.norm(delta_pos, dim=1)
             seg_speed = seg_dist / dt
@@ -409,7 +454,7 @@ def bound_speed_and_acceleration(actions: torch.Tensor, ego_state_unnormalized: 
             if t == 0:
                 prev_speed = ego_speed
             else:
-                prev_seg = full_pos[:, t] - full_pos[:, t-1]
+                prev_seg = full_pos[:, t] - full_pos[:, t - 1]
                 prev_speed = torch.norm(prev_seg, dim=1) / dt
 
             # Minimum speed allowed by deceleration bounds
@@ -420,7 +465,7 @@ def bound_speed_and_acceleration(actions: torch.Tensor, ego_state_unnormalized: 
             target_speed = torch.where(
                 min_speed_due_to_decel > speed_limits,
                 min_speed_due_to_decel,  # Can't reach speed limit due to deceleration constraint
-                speed_limits             # Can safely reach speed limit
+                speed_limits,  # Can safely reach speed limit
             )
 
             # Don't increase speed if already below limit
@@ -434,7 +479,7 @@ def bound_speed_and_acceleration(actions: torch.Tensor, ego_state_unnormalized: 
             delta = corrected_pos - curr_pos
 
             # Apply shift to current and all future points
-            full_pos[:, t+1:] += delta.unsqueeze(1)
+            full_pos[:, t + 1 :] += delta.unsqueeze(1)
 
         # If no violations were fixed, we're done
         if violations_fixed == 0:

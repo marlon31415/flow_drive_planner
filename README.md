@@ -14,15 +14,15 @@
 All demonstration GIFs correspond to figures in the paper.
 
 ### Figure 7: Challenging Scenarios on nuPlan (Rows 1–4)
-| Row 1 | Row 2 |
-|:-----:|:-----:|
+|                          Row 1                           |                          Row 2                           |
+| :------------------------------------------------------: | :------------------------------------------------------: |
 | ![Fig7 Row1](videos/challenging_scenarios/Fig7_row1.gif) | ![Fig7 Row2](videos/challenging_scenarios/Fig7_row2.gif) |
-| Row 3 | Row 4 |
+|                          Row 3                           |                          Row 4                           |
 | ![Fig7 Row3](videos/challenging_scenarios/Fig7_row3.gif) | ![Fig7 Row4](videos/challenging_scenarios/Fig7_row4.gif) |
 
 ### Figure 8: Challenging Scenarios on InterPlan (Rows 1–2)
-| Row 1 | Row 2 |
-|:-----:|:-----:|
+|                          Row 1                           |                          Row 2                           |
+| :------------------------------------------------------: | :------------------------------------------------------: |
 | ![Fig8 Row1](videos/challenging_scenarios/Fig8_row1.gif) | ![Fig8 Row2](videos/challenging_scenarios/Fig8_row2.gif) |
 
 ## Getting Started

@@ -7,5 +7,5 @@ if __name__ == "__main__":
     params = load_params(params_path)
 
     print("Preparing dataset weights...")
-    dataloader = training_dataloader(params, device='cpu')
+    dataloader = training_dataloader(params, device="cpu")
     print("Dataset weights prepared.")

@@ -1,8 +1,9 @@
 import os
+
 default_n_threads = 8
-os.environ['OPENBLAS_NUM_THREADS'] = f"{default_n_threads}"
-os.environ['MKL_NUM_THREADS'] = f"{default_n_threads}"
-os.environ['OMP_NUM_THREADS'] = f"{default_n_threads}"
+os.environ["OPENBLAS_NUM_THREADS"] = f"{default_n_threads}"
+os.environ["MKL_NUM_THREADS"] = f"{default_n_threads}"
+os.environ["OMP_NUM_THREADS"] = f"{default_n_threads}"
 import pickle
 import time
 import torch
@@ -18,9 +19,13 @@ from flow_drive.utils.train_utils import openjson, opendata, load_params
 from flow_drive.utils.normalizer import StateNormalizer, ObservationNormalizer
 from flow_drive.utils.data_augmentation import StatePerturbation
 
-from nuplan.planning.utils.multithreading.worker_parallel import SingleMachineParallelExecutor
+from nuplan.planning.utils.multithreading.worker_parallel import (
+    SingleMachineParallelExecutor,
+)
 from nuplan.planning.scenario_builder.scenario_filter import ScenarioFilter
-from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario_builder import NuPlanScenarioBuilder
+from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario_builder import (
+    NuPlanScenarioBuilder,
+)
 
 
 class ClusterStatsRetriever:
@@ -38,20 +43,23 @@ class ClusterStatsRetriever:
             cluster_stats: Pre-loaded cluster statistics (alternative to path)
         """
         if cluster_stats is None and cluster_stats_path is None:
-            raise ValueError("Either cluster_stats or cluster_stats_path must be provided")
+            raise ValueError(
+                "Either cluster_stats or cluster_stats_path must be provided"
+            )
 
         if cluster_stats is None:
-            with open(cluster_stats_path, 'rb') as f:
+            with open(cluster_stats_path, "rb") as f:
                 saved_data = pickle.load(f)
-            self.cluster_centers = saved_data['cluster_centers']
-            self.cluster_stats = saved_data['cluster_stats']
-            self.n_clusters = saved_data['n_clusters']
+            self.cluster_centers = saved_data["cluster_centers"]
+            self.cluster_stats = saved_data["cluster_stats"]
+            self.n_clusters = saved_data["n_clusters"]
         else:
             # Extract cluster centers from provided stats
-            self.cluster_centers = np.array([stats['center'].flatten() for stats in cluster_stats.values()])
+            self.cluster_centers = np.array(
+                [stats["center"].flatten() for stats in cluster_stats.values()]
+            )
             self.cluster_stats = cluster_stats
             self.n_clusters = len(cluster_stats)
-
 
     def get_cluster_stats(self, cluster_indices: torch.Tensor):
         """
@@ -70,11 +78,12 @@ class ClusterStatsRetriever:
         cluster_mean_std = np.zeros((B, 2, 3))
         for i, cluster_id in enumerate(cluster_indices):
             if cluster_id < 0 or cluster_id >= self.n_clusters:
-                raise ValueError(f"Cluster index {cluster_id} out of bounds for n_clusters={self.n_clusters}")
-            cluster_mean_std[i, 0, :] = self.cluster_stats[cluster_id]['mean']
-            cluster_mean_std[i, 1, :] = self.cluster_stats[cluster_id]['std']
+                raise ValueError(
+                    f"Cluster index {cluster_id} out of bounds for n_clusters={self.n_clusters}"
+                )
+            cluster_mean_std[i, 0, :] = self.cluster_stats[cluster_id]["mean"]
+            cluster_mean_std[i, 1, :] = self.cluster_stats[cluster_id]["std"]
         return torch.from_numpy(cluster_mean_std).float().to(device)
-
 
     def __call__(self, ego_future_batch):
         """
@@ -97,18 +106,24 @@ class ClusterStatsRetriever:
         # Compute distances to all cluster centers (only using x,y coordinates)
         distances = np.linalg.norm(
             xy_flattened[:, np.newaxis, :] - self.cluster_centers[np.newaxis, :, :],
-            axis=2
+            axis=2,
         )  # [B, n_clusters]
 
         # Find closest cluster for each trajectory
         cluster_indices = np.argmin(distances, axis=1)  # [B]
 
         # Extract corresponding mean and std for each trajectory (including yaw statistics)
-        cluster_mean_std = np.zeros((batch_size, 2, 3))  # [B, 2, 3] for [mean, std] with [x, y, yaw]
+        cluster_mean_std = np.zeros(
+            (batch_size, 2, 3)
+        )  # [B, 2, 3] for [mean, std] with [x, y, yaw]
 
         for i, cluster_id in enumerate(cluster_indices):
-            cluster_mean_std[i, 0, :] = self.cluster_stats[cluster_id]['mean']  # mean [3] - x, y, yaw
-            cluster_mean_std[i, 1, :] = self.cluster_stats[cluster_id]['std']   # std [3] - x, y, yaw
+            cluster_mean_std[i, 0, :] = self.cluster_stats[cluster_id][
+                "mean"
+            ]  # mean [3] - x, y, yaw
+            cluster_mean_std[i, 1, :] = self.cluster_stats[cluster_id][
+                "std"
+            ]  # std [3] - x, y, yaw
 
         # Convert to tensors
         cluster_indices = torch.from_numpy(cluster_indices).to(device)
@@ -130,14 +145,18 @@ class FlowDriveDataset(Dataset):
 
         self.action_normalizer = StateNormalizer.from_json(config)
         self.observation_normalizer = ObservationNormalizer.from_json(config)
-        self.state_augmentation = StatePerturbation(augment_prob=config.augment_prob,
-                                                    augment_mode=config.augment_mode,
-                                                    device=device)
+        self.state_augmentation = StatePerturbation(
+            augment_prob=config.augment_prob,
+            augment_mode=config.augment_mode,
+            device=device,
+        )
 
         if config.weighted_sampling:
             if config.balance_mode == "cluster":
                 print("Using cluster-balanced weight computation...")
-                self.weights = self._compute_weights_for_balanced_clusters()  # shape: [N,]
+                self.weights = (
+                    self._compute_weights_for_balanced_clusters()
+                )  # shape: [N,]
             elif config.balance_mode == "scenario_type":
                 print("Using scenario type-based weight computation...")
                 self._get_all_training_scenario_types()
@@ -154,22 +173,30 @@ class FlowDriveDataset(Dataset):
         print("Computing cluster-balanced weights for each trajectory...")
 
         # Define file path for saving/loading cluster-balanced weights
-        cluster_weights_file = self.data_dir + f"/cluster_weights_{self.weights_file_extension}.npy"
+        cluster_weights_file = (
+            self.data_dir + f"/cluster_weights_{self.weights_file_extension}.npy"
+        )
 
         # Check if precomputed cluster weights exist
         if os.path.exists(cluster_weights_file):
             print("Cluster-balanced weights: pre-computed weights found, loading...")
             trajectory_weights = np.load(cluster_weights_file, allow_pickle=True)
-            print(f"Loaded {len(trajectory_weights)} precomputed cluster-balanced weights")
+            print(
+                f"Loaded {len(trajectory_weights)} precomputed cluster-balanced weights"
+            )
             return trajectory_weights
 
         # If precomputed weights don't exist, compute them
         print("Cluster-balanced weights: computing from scratch...")
 
         # Load cluster statistics
-        cluster_stats_path = os.path.join(os.path.dirname(__file__), "..", "config", "ego_future_clusters.pkl")
+        cluster_stats_path = os.path.join(
+            os.path.dirname(__file__), "..", "config", "ego_future_clusters.pkl"
+        )
         if not os.path.exists(cluster_stats_path):
-            raise FileNotFoundError(f"Cluster statistics file not found: {cluster_stats_path}")
+            raise FileNotFoundError(
+                f"Cluster statistics file not found: {cluster_stats_path}"
+            )
 
         cluster_retriever = ClusterStatsRetriever(cluster_stats_path=cluster_stats_path)
 
@@ -178,11 +205,14 @@ class FlowDriveDataset(Dataset):
         all_cluster_indices = []
 
         from torch.utils.data import DataLoader
-        dataloader = DataLoader(self, batch_size=batch_size, shuffle=False, num_workers=16)
+
+        dataloader = DataLoader(
+            self, batch_size=batch_size, shuffle=False, num_workers=16
+        )
 
         print(f"Processing {len(self)} trajectories in batches of {batch_size}...")
         for batch_idx, batch in enumerate(dataloader):
-            print(f"Processing batch {batch_idx + 1}/{len(dataloader)}", end='\r')
+            print(f"Processing batch {batch_idx + 1}/{len(dataloader)}", end="\r")
 
             # Transform inputs to get normalized ego future
             _, ego_future_normalized, _ = self.transform_inputs_tensor(batch)
@@ -192,7 +222,9 @@ class FlowDriveDataset(Dataset):
             all_cluster_indices.extend(cluster_indices.cpu().numpy())
 
         all_cluster_indices = np.array(all_cluster_indices)
-        print(f"\nCollected cluster assignments for {len(all_cluster_indices)} trajectories")
+        print(
+            f"\nCollected cluster assignments for {len(all_cluster_indices)} trajectories"
+        )
 
         # Compute cluster distribution
         n_clusters = cluster_retriever.n_clusters
@@ -201,7 +233,9 @@ class FlowDriveDataset(Dataset):
 
         print("Current cluster distribution:")
         for i in range(n_clusters):
-            print(f"  Cluster {i}: {cluster_counts[i]} samples ({cluster_frequencies[i]*100:.2f}%)")
+            print(
+                f"  Cluster {i}: {cluster_counts[i]} samples ({cluster_frequencies[i]*100:.2f}%)"
+            )
 
         # Compute inverse frequency weights for balancing
         # Add small epsilon to avoid division by zero
@@ -225,7 +259,6 @@ class FlowDriveDataset(Dataset):
 
         return trajectory_weights
 
-
     def _compute_weights_for_balanced_scenario_types(self):
         """
         Compute weights to balance scenario type distribution.
@@ -244,7 +277,9 @@ class FlowDriveDataset(Dataset):
         frequencies = counts / total_samples
 
         print("Current scenario type distribution:")
-        for i, (scenario_type, count, freq) in enumerate(zip(unique_types, counts, frequencies)):
+        for i, (scenario_type, count, freq) in enumerate(
+            zip(unique_types, counts, frequencies)
+        ):
             print(f"  {scenario_type}: {count} samples ({freq*100:.2f}%)")
 
         # Compute inverse frequency weights for balancing
@@ -263,30 +298,59 @@ class FlowDriveDataset(Dataset):
         type_to_weight = dict(zip(unique_types, inv_freq_weights))
 
         # Assign weights to each trajectory based on its scenario type
-        trajectory_weights = np.array([type_to_weight[scenario_type] for scenario_type in scenario_types_array])
+        trajectory_weights = np.array(
+            [type_to_weight[scenario_type] for scenario_type in scenario_types_array]
+        )
 
         print(f"Computed weights for {len(trajectory_weights)} trajectories")
         return trajectory_weights
 
-
     def _get_all_training_scenarios(self):
         builder = NuPlanScenarioBuilder(
-            self.config.data_original_path, self.config.map_original_path, None, None, "nuplan-maps-v1.0")
-        worker = SingleMachineParallelExecutor(use_process_pool=True, max_workers=int(0.8 * cpu_count()))
+            self.config.data_original_path,
+            self.config.map_original_path,
+            None,
+            None,
+            "nuplan-maps-v1.0",
+        )
+        worker = SingleMachineParallelExecutor(
+            use_process_pool=True, max_workers=int(0.8 * cpu_count())
+        )
         t1 = time.time()
         tokens = []
         for idx in range(len(self.data_list)):
-            token = self.data_list[idx].split('_')[-1].split('.')[0]
+            token = self.data_list[idx].split("_")[-1].split(".")[0]
             tokens.append(token)
         all_scenarios = []
-        max_tokens = 100000  # maximum tokens per query chunk to avoid too many SQL variables
+        max_tokens = (
+            100000  # maximum tokens per query chunk to avoid too many SQL variables
+        )
         for i in tqdm(range(0, len(tokens), max_tokens), desc="Querying scenarios"):
-            chunk_tokens = tokens[i:i+max_tokens]
-            scenario_filter = ScenarioFilter(None, chunk_tokens, None, None, None, None, None, None,
-                                             False, False, False, None, None, None, None, None, None)
+            chunk_tokens = tokens[i : i + max_tokens]
+            scenario_filter = ScenarioFilter(
+                None,
+                chunk_tokens,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                False,
+                False,
+                False,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             chunk_scenarios = builder.get_scenarios(scenario_filter, worker)
             if len(chunk_scenarios) != len(chunk_tokens):
-                raise ValueError(f"Number of scenarios does not match number of tokens in chunk starting at index {i}")
+                raise ValueError(
+                    f"Number of scenarios does not match number of tokens in chunk starting at index {i}"
+                )
             all_scenarios.extend(chunk_scenarios)
         # Reorder scenarios to match tokens order
         token_to_scenario = {scenario.token: scenario for scenario in all_scenarios}
@@ -297,9 +361,10 @@ class FlowDriveDataset(Dataset):
         scenarios = [token_to_scenario[token] for token in tokens]
         return scenarios
 
-
     def _get_all_training_scenario_types(self):
-        scenario_types_file = os.path.join(self.data_dir, f"scenario_types_{self.weights_file_extension}.npy")
+        scenario_types_file = os.path.join(
+            self.data_dir, f"scenario_types_{self.weights_file_extension}.npy"
+        )
         if os.path.exists(scenario_types_file):
             self.scenario_types = np.load(scenario_types_file, allow_pickle=True)
             return
@@ -308,32 +373,32 @@ class FlowDriveDataset(Dataset):
         self.scenario_types = [scenario.scenario_type for scenario in scenarios]
         np.save(scenario_types_file, self.scenario_types, allow_pickle=True)
 
-
     def __len__(self):
         return len(self.data_list)
 
-
     def __getitem__(self, idx):
         data = opendata(os.path.join(self.data_dir, self.data_list[idx]))
-        token = self.data_list[idx].split('_')[-1].split('.')[0]
+        token = self.data_list[idx].split("_")[-1].split(".")[0]
 
-        lanes_is_route = data['lanes_is_route']
+        lanes_is_route = data["lanes_is_route"]
 
-        ego_current_state = data['ego_current_state']
-        ego_agent_future = data['ego_agent_future'][:self._future_len]
+        ego_current_state = data["ego_current_state"]
+        ego_agent_future = data["ego_agent_future"][: self._future_len]
 
-        neighbor_agents_past = data['neighbor_agents_past'][:self._past_neighbor_num]
-        neighbor_agents_future = data['neighbor_agents_future'][:self._predicted_neighbor_num, :self._future_len]
+        neighbor_agents_past = data["neighbor_agents_past"][: self._past_neighbor_num]
+        neighbor_agents_future = data["neighbor_agents_future"][
+            : self._predicted_neighbor_num, : self._future_len
+        ]
 
-        lanes = data['lanes']
-        lanes_speed_limit = data['lanes_speed_limit']
-        lanes_has_speed_limit = data['lanes_has_speed_limit']
+        lanes = data["lanes"]
+        lanes_speed_limit = data["lanes_speed_limit"]
+        lanes_has_speed_limit = data["lanes_has_speed_limit"]
 
-        route_lanes = data['route_lanes']
-        route_lanes_speed_limit = data['route_lanes_speed_limit']
-        route_lanes_has_speed_limit = data['route_lanes_has_speed_limit']
+        route_lanes = data["route_lanes"]
+        route_lanes_speed_limit = data["route_lanes_speed_limit"]
+        route_lanes_has_speed_limit = data["route_lanes_has_speed_limit"]
 
-        static_objects = data['static_objects']
+        static_objects = data["static_objects"]
 
         data = {
             "idx": idx,
@@ -349,29 +414,35 @@ class FlowDriveDataset(Dataset):
             "route_lanes": route_lanes,
             "route_lanes_speed_limit": route_lanes_speed_limit,
             "route_lanes_has_speed_limit": route_lanes_has_speed_limit,
-            "static_objects": static_objects
+            "static_objects": static_objects,
         }
         return data
 
-
     def inputs_augmentation(self, inputs):
-        inputs, ego_future, neighbors_future_not_normalized = self.state_augmentation(inputs)
+        inputs, ego_future, neighbors_future_not_normalized = self.state_augmentation(
+            inputs
+        )
         # heading to cos sin
-        ego_future = torch.cat([
-            ego_future[..., :2],
-            torch.stack([ego_future[..., 2].cos(),
-                            ego_future[..., 2].sin()], dim=-1),],dim=-1,)  # [B, T, 3] -> [B, T, 2 + 2]
+        ego_future = torch.cat(
+            [
+                ego_future[..., :2],
+                torch.stack(
+                    [ego_future[..., 2].cos(), ego_future[..., 2].sin()], dim=-1
+                ),
+            ],
+            dim=-1,
+        )  # [B, T, 3] -> [B, T, 2 + 2]
         return inputs, ego_future, neighbors_future_not_normalized
-
 
     def inputs_normalization(self, inputs, ego_future):
         inputs = self.observation_normalizer(inputs)
         ego_future = self.action_normalizer(ego_future)
         return inputs, ego_future
 
-
     def transform_inputs_tensor(self, inputs):
-        inputs, ego_future, neighbors_future_not_normalized = self.inputs_augmentation(inputs)
+        inputs, ego_future, neighbors_future_not_normalized = self.inputs_augmentation(
+            inputs
+        )
         inputs, ego_future_normalized = self.inputs_normalization(inputs, ego_future)
         return inputs, ego_future_normalized, neighbors_future_not_normalized
 
@@ -391,18 +462,18 @@ def compute_ego_future_clusters(dataset, n_clusters=20, save_path=None):
     print(f"Computing ego future clusters for {len(dataset)} samples...")
 
     # Set OpenBLAS thread limit to avoid memory issues
-    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
     # Collect all normalized ego futures (full [x, y, cos, sin] data)
     all_ego_futures_full = []  # Store full trajectories [T, 4]
-    all_ego_futures_xy = []    # Store only x,y for clustering [T*2]
+    all_ego_futures_xy = []  # Store only x,y for clustering [T*2]
     all_indices = []
 
     # Create a DataLoader to efficiently process the dataset
     dataloader = DataLoader(dataset, batch_size=100, shuffle=True, num_workers=16)
 
     for batch_idx, batch in enumerate(dataloader):
-        print(f"Processing batch {batch_idx + 1}/{len(dataloader)}", end='\r')
+        print(f"Processing batch {batch_idx + 1}/{len(dataloader)}", end="\r")
 
         # Transform inputs to get normalized ego future
         _, ego_future_normalized, _ = dataset.transform_inputs_tensor(batch)
@@ -426,7 +497,7 @@ def compute_ego_future_clusters(dataset, n_clusters=20, save_path=None):
 
     # Convert to numpy arrays
     ego_futures_full_array = np.array(all_ego_futures_full)  # [N, T, 4]
-    ego_futures_xy_array = np.array(all_ego_futures_xy)      # [N, T*2]
+    ego_futures_xy_array = np.array(all_ego_futures_xy)  # [N, T*2]
 
     # Perform K-means clustering (using only x,y coordinates)
     print(f"Performing K-means clustering with {n_clusters} clusters...")
@@ -438,16 +509,22 @@ def compute_ego_future_clusters(dataset, n_clusters=20, save_path=None):
     cluster_stats = {}
     for cluster_id in range(n_clusters):
         cluster_mask = cluster_labels == cluster_id
-        cluster_trajectories_xy = ego_futures_xy_array[cluster_mask]  # [n_samples_in_cluster, 80]
-        cluster_trajectories_full = ego_futures_full_array[cluster_mask]  # [n_samples_in_cluster, T, 4]
+        cluster_trajectories_xy = ego_futures_xy_array[
+            cluster_mask
+        ]  # [n_samples_in_cluster, 80]
+        cluster_trajectories_full = ego_futures_full_array[
+            cluster_mask
+        ]  # [n_samples_in_cluster, T, 4]
 
         if len(cluster_trajectories_full) > 0:
             # Reshape xy trajectories back to [n_samples, T, 2] for computing position statistics
             cluster_trajectories_reshaped = cluster_trajectories_xy.reshape(-1, 40, 2)
             # Compute mean and std across all positions in the cluster
-            all_positions = cluster_trajectories_reshaped.reshape(-1, 2)  # [n_samples*T, 2]
+            all_positions = cluster_trajectories_reshaped.reshape(
+                -1, 2
+            )  # [n_samples*T, 2]
             cluster_pos_mean = np.mean(all_positions, axis=0)  # [2]
-            cluster_pos_std = np.std(all_positions, axis=0)   # [2]
+            cluster_pos_std = np.std(all_positions, axis=0)  # [2]
 
             # Compute yaw angle statistics from cos/sin values directly from saved data
             cos_vals = cluster_trajectories_full[:, :, 2].flatten()  # [n_samples*T]
@@ -462,32 +539,40 @@ def compute_ego_future_clusters(dataset, n_clusters=20, save_path=None):
 
             # Circular standard deviation
             R = np.abs(circular_mean_complex)  # resultant length
-            cluster_yaw_std = np.sqrt(-2 * np.log(R)) if R > 0 else np.pi  # circular std
+            cluster_yaw_std = (
+                np.sqrt(-2 * np.log(R)) if R > 0 else np.pi
+            )  # circular std
 
             cluster_stats[cluster_id] = {
-                'mean': np.concatenate([cluster_pos_mean, [cluster_yaw_mean]]),  # [3] - x, y, yaw
-                'std': np.concatenate([cluster_pos_std, [cluster_yaw_std]]),     # [3] - x, y, yaw
-                'center': cluster_centers[cluster_id].reshape(40, 2),  # [T, 2] - only x,y for clustering
-                'count': np.sum(cluster_mask)
+                "mean": np.concatenate(
+                    [cluster_pos_mean, [cluster_yaw_mean]]
+                ),  # [3] - x, y, yaw
+                "std": np.concatenate(
+                    [cluster_pos_std, [cluster_yaw_std]]
+                ),  # [3] - x, y, yaw
+                "center": cluster_centers[cluster_id].reshape(
+                    40, 2
+                ),  # [T, 2] - only x,y for clustering
+                "count": np.sum(cluster_mask),
             }
         else:
             # Fallback if no trajectories found
             cluster_stats[cluster_id] = {
-                'mean': np.array([0.0, 0.0, 0.0]),  # [3] - x, y, yaw
-                'std': np.array([1.0, 1.0, np.pi]), # [3] - x, y, yaw
-                'center': cluster_centers[cluster_id].reshape(40, 2),
-                'count': np.sum(cluster_mask)
+                "mean": np.array([0.0, 0.0, 0.0]),  # [3] - x, y, yaw
+                "std": np.array([1.0, 1.0, np.pi]),  # [3] - x, y, yaw
+                "center": cluster_centers[cluster_id].reshape(40, 2),
+                "count": np.sum(cluster_mask),
             }
 
     # Save cluster statistics
     save_data = {
-        'cluster_centers': cluster_centers,
-        'cluster_labels': cluster_labels,
-        'cluster_stats': cluster_stats,
-        'n_clusters': n_clusters,
-        'indices': all_indices
+        "cluster_centers": cluster_centers,
+        "cluster_labels": cluster_labels,
+        "cluster_stats": cluster_stats,
+        "n_clusters": n_clusters,
+        "indices": all_indices,
     }
-    with open(save_path, 'wb') as f:
+    with open(save_path, "wb") as f:
         pickle.dump(save_data, f)
     print(f"Cluster statistics saved to: {save_path}")
 
@@ -501,5 +586,7 @@ if __name__ == "__main__":
     compute_ego_future_clusters(
         FlowDriveDataset(params.data_processing, device="cpu", training=True),
         n_clusters=20,
-        save_path=os.path.join(os.path.dirname(__file__), "..", "config", "ego_future_clusters.pkl")
+        save_path=os.path.join(
+            os.path.dirname(__file__), "..", "config", "ego_future_clusters.pkl"
+        ),
     )

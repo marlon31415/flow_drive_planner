@@ -25,7 +25,7 @@ class StateNormalizer:
     def to_dict(self):
         return {
             "mean": self.mean.detach().cpu().numpy().tolist(),
-            "std": self.std.detach().cpu().numpy().tolist()
+            "std": self.std.detach().cpu().numpy().tolist(),
         }
 
 
@@ -44,8 +44,10 @@ class ObservationNormalizer:
         ndt = {}
         for k, v in data.items():
             if k not in ["state"]:
-                ndt[k]= {"mean": torch.tensor(v["mean"], dtype=torch.float32),
-                         "std": torch.tensor(v["std"], dtype=torch.float32)}
+                ndt[k] = {
+                    "mean": torch.tensor(v["mean"], dtype=torch.float32),
+                    "std": torch.tensor(v["std"], dtype=torch.float32),
+                }
         return cls(ndt)
 
     def __call__(self, data):
@@ -54,7 +56,9 @@ class ObservationNormalizer:
             if k not in data:  # Check if key `k` exists in `data`
                 continue
             mask = torch.sum(torch.ne(data[k], 0), dim=-1) == 0
-            norm_data[k] = (data[k] - v["mean"].to(data[k].device)) / v["std"].to(data[k].device)
+            norm_data[k] = (data[k] - v["mean"].to(data[k].device)) / v["std"].to(
+                data[k].device
+            )
             norm_data[k][mask] = 0
         return norm_data
 
@@ -64,9 +68,14 @@ class ObservationNormalizer:
             if k not in data:  # Check if key `k` exists in `data`
                 continue
             mask = torch.sum(torch.ne(data[k], 0), dim=-1) == 0
-            norm_data[k] = data[k] * v["std"].to(data[k].device) + v["mean"].to(data[k].device)
+            norm_data[k] = data[k] * v["std"].to(data[k].device) + v["mean"].to(
+                data[k].device
+            )
             norm_data[k][mask] = 0
         return norm_data
 
     def to_dict(self):
-        return {k: {kk: vv.detach().cpu().numpy().tolist() for kk, vv in v.items()} for k, v in self._normalization_dict.items()}
+        return {
+            k: {kk: vv.detach().cpu().numpy().tolist() for kk, vv in v.items()}
+            for k, v in self._normalization_dict.items()
+        }

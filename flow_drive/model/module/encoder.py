@@ -15,20 +15,28 @@ class Encoder(nn.Module):
         self.token_num = config.agent_num + config.static_objects_num + config.lane_num
 
         self.neighbor_encoder = AgentFusionEncoder(
-            config.time_len, drop_path_rate=config.encoder_drop_path_rate,
-            hidden_dim=config.hidden_dim, depth=config.encoder_depth)
+            config.time_len,
+            drop_path_rate=config.encoder_drop_path_rate,
+            hidden_dim=config.hidden_dim,
+            depth=config.encoder_depth,
+        )
         self.static_encoder = StaticFusionEncoder(
-            config.static_objects_state_dim, drop_path_rate=config.encoder_drop_path_rate,
-            hidden_dim=config.hidden_dim)
+            config.static_objects_state_dim,
+            drop_path_rate=config.encoder_drop_path_rate,
+            hidden_dim=config.hidden_dim,
+        )
         self.lane_encoder = LaneFusionEncoder(
-            config.lane_len, drop_path_rate=config.encoder_drop_path_rate,
-            hidden_dim=config.hidden_dim, depth=config.encoder_depth)
+            config.lane_len,
+            drop_path_rate=config.encoder_drop_path_rate,
+            hidden_dim=config.hidden_dim,
+            depth=config.encoder_depth,
+        )
 
         self.fusion = FusionEncoder(
             hidden_dim=config.hidden_dim,
             num_heads=config.num_heads,
             drop_path_rate=config.encoder_drop_path_rate,
-            depth=config.encoder_depth
+            depth=config.encoder_depth,
         )
         # position embedding encode x, y, cos, sin, type
         self.pos_emb = nn.Linear(7, config.hidden_dim)
@@ -47,6 +55,7 @@ class Encoder(nn.Module):
                 nn.init.constant_(m.weight, 1.0)
             elif isinstance(m, nn.Embedding):
                 nn.init.normal_(m.weight, mean=0.0, std=0.02)
+
         self.apply(_basic_init)
 
         # Initialize embedding MLP:
@@ -55,18 +64,22 @@ class Encoder(nn.Module):
         nn.init.normal_(self.lane_encoder.traffic_emb.weight, std=0.02)
 
     def forward(self, inputs):
-        neighbors = inputs['neighbor_agents_past']
-        static = inputs['static_objects']
-        lanes = inputs['lanes']
-        lanes_speed_limit = inputs['lanes_speed_limit']
-        lanes_has_speed_limit = inputs['lanes_has_speed_limit']
-        lanes_is_route = inputs['lanes_is_route']
+        neighbors = inputs["neighbor_agents_past"]
+        static = inputs["static_objects"]
+        lanes = inputs["lanes"]
+        lanes_speed_limit = inputs["lanes_speed_limit"]
+        lanes_has_speed_limit = inputs["lanes_has_speed_limit"]
+        lanes_is_route = inputs["lanes_is_route"]
 
         B = neighbors.shape[0]
 
-        encoding_neighbors, neighbors_mask, neighbor_pos = self.neighbor_encoder(neighbors)
+        encoding_neighbors, neighbors_mask, neighbor_pos = self.neighbor_encoder(
+            neighbors
+        )
         encoding_static, static_mask, static_pos = self.static_encoder(static)
-        encoding_lanes, lanes_mask, lane_pos = self.lane_encoder(lanes, lanes_speed_limit, lanes_has_speed_limit, lanes_is_route)
+        encoding_lanes, lanes_mask, lane_pos = self.lane_encoder(
+            lanes, lanes_speed_limit, lanes_has_speed_limit, lanes_is_route
+        )
 
         encoding_input = [encoding_neighbors, encoding_static, encoding_lanes]
         encoding_mask = [neighbors_mask, static_mask, lanes_mask]
@@ -75,27 +88,43 @@ class Encoder(nn.Module):
         encoding_mask = torch.cat(encoding_mask, dim=1).view(-1)
 
         # positional encoding based on position, orientation, and type of each token
-        encoding_pos = torch.cat([neighbor_pos, static_pos, lane_pos], dim=1).view(B * self.token_num, -1)
+        encoding_pos = torch.cat([neighbor_pos, static_pos, lane_pos], dim=1).view(
+            B * self.token_num, -1
+        )
         encoding_pos = self.pos_emb(encoding_pos[~encoding_mask])
-        encoding_pos_result = torch.zeros((B * self.token_num, self.hidden_dim), device=encoding_pos.device)
+        encoding_pos_result = torch.zeros(
+            (B * self.token_num, self.hidden_dim), device=encoding_pos.device
+        )
         encoding_pos_result[~encoding_mask] = encoding_pos  # Fill in valid parts
 
-        encoding_input = encoding_input + encoding_pos_result.view(B, self.token_num, -1)
+        encoding_input = encoding_input + encoding_pos_result.view(
+            B, self.token_num, -1
+        )
 
         # [B, num_lanes + num_static + num_neighbors, hidden_dim]
-        encoder_outputs = self.fusion(encoding_input, encoding_mask.view(B, self.token_num))
+        encoder_outputs = self.fusion(
+            encoding_input, encoding_mask.view(B, self.token_num)
+        )
         # select only valid tokens
-        valid_indices = ~encoding_mask.view(B, -1)  # [B, token_num], where valid_indices is True
+        valid_indices = ~encoding_mask.view(
+            B, -1
+        )  # [B, token_num], where valid_indices is True
         encoding_mask = encoding_mask.view(B, -1)  # [B, token_num]
 
         # extract only valid tokens from encoder_outputs
-        empty_tokens = torch.zeros((B, self.token_num, self.hidden_dim), device=encoder_outputs.device)
-        empty_tokens[valid_indices] = encoder_outputs[valid_indices]  # Fill in valid parts
-        encoder_outputs = empty_tokens.view(B, -1, self.hidden_dim)  # [B, token_num, hidden_dim]
+        empty_tokens = torch.zeros(
+            (B, self.token_num, self.hidden_dim), device=encoder_outputs.device
+        )
+        empty_tokens[valid_indices] = encoder_outputs[
+            valid_indices
+        ]  # Fill in valid parts
+        encoder_outputs = empty_tokens.view(
+            B, -1, self.hidden_dim
+        )  # [B, token_num, hidden_dim]
 
         return {
             "encoding": encoder_outputs,  # [B, token_num, hidden_dim]
-            "mask": encoding_mask         # [B, token_num]
+            "mask": encoding_mask,  # [B, token_num]
         }
 
 
@@ -109,7 +138,12 @@ class SelfAttentionBlock(nn.Module):
         self.drop_path = DropPath(dropout) if dropout > 0.0 else nn.Identity()
         self.norm2 = nn.LayerNorm(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=nn.GELU, drop=dropout)
+        self.mlp = Mlp(
+            in_features=dim,
+            hidden_features=mlp_hidden_dim,
+            act_layer=nn.GELU,
+            drop=dropout,
+        )
 
     def forward(self, x, mask):
         x = x + self.drop_path(self.attn(self.norm1(x), x, x, key_padding_mask=mask)[0])
@@ -118,7 +152,15 @@ class SelfAttentionBlock(nn.Module):
 
 
 class AgentFusionEncoder(nn.Module):
-    def __init__(self, time_len, drop_path_rate=0.3, hidden_dim=192, depth=3, tokens_mlp_dim=64, channels_mlp_dim=128):
+    def __init__(
+        self,
+        time_len,
+        drop_path_rate=0.3,
+        hidden_dim=192,
+        depth=3,
+        tokens_mlp_dim=64,
+        channels_mlp_dim=128,
+    ):
         super().__init__()
 
         self._hidden_dim = hidden_dim
@@ -126,23 +168,45 @@ class AgentFusionEncoder(nn.Module):
 
         self.type_emb = nn.Linear(3, channels_mlp_dim)
 
-        self.channel_pre_project = Mlp(in_features=8+1, hidden_features=channels_mlp_dim, out_features=channels_mlp_dim, act_layer=nn.GELU, drop=0.)
-        self.token_pre_project = Mlp(in_features=time_len, hidden_features=tokens_mlp_dim, out_features=tokens_mlp_dim, act_layer=nn.GELU, drop=0.)
+        self.channel_pre_project = Mlp(
+            in_features=8 + 1,
+            hidden_features=channels_mlp_dim,
+            out_features=channels_mlp_dim,
+            act_layer=nn.GELU,
+            drop=0.0,
+        )
+        self.token_pre_project = Mlp(
+            in_features=time_len,
+            hidden_features=tokens_mlp_dim,
+            out_features=tokens_mlp_dim,
+            act_layer=nn.GELU,
+            drop=0.0,
+        )
 
-        self.blocks = nn.ModuleList([MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)])
+        self.blocks = nn.ModuleList(
+            [
+                MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate)
+                for i in range(depth)
+            ]
+        )
 
         self.norm = nn.LayerNorm(channels_mlp_dim)
-        self.emb_project = Mlp(in_features=channels_mlp_dim, hidden_features=hidden_dim, out_features=hidden_dim, act_layer=nn.GELU, drop=drop_path_rate)
-
+        self.emb_project = Mlp(
+            in_features=channels_mlp_dim,
+            hidden_features=hidden_dim,
+            out_features=hidden_dim,
+            act_layer=nn.GELU,
+            drop=drop_path_rate,
+        )
 
     def forward(self, x):
-        '''
+        """
         x: B, P, V, D (x, y, cos, sin, vx, vy, w, l, type(3))
-        '''
+        """
         neighbor_type = x[:, :, -1, 8:]
         x = x[..., :8]
 
-        pos = x[:, :, -1, :7].detach().clone() # x, y, cos, sin
+        pos = x[:, :, -1, :7].detach().clone()  # x, y, cos, sin
         # neighbor: [1,0,0]
         pos[..., -3:] = 0.0
         pos[..., -3] = 1.0
@@ -176,23 +240,29 @@ class AgentFusionEncoder(nn.Module):
         x_result = torch.zeros((B * P, x.shape[-1]), device=x.device)
         x_result[valid_indices] = x  # Fill in valid parts
 
-        return x_result.view(B, P, -1) , mask_p.reshape(B, -1), pos.view(B, P, -1)
+        return x_result.view(B, P, -1), mask_p.reshape(B, -1), pos.view(B, P, -1)
 
 
 class StaticFusionEncoder(nn.Module):
-    def __init__(self, dim, drop_path_rate=0.3, hidden_dim=192, device='cuda'):
+    def __init__(self, dim, drop_path_rate=0.3, hidden_dim=192, device="cuda"):
         super().__init__()
 
         self._hidden_dim = hidden_dim
-        self.projection = Mlp(in_features=dim, hidden_features=hidden_dim, out_features=hidden_dim, act_layer=nn.GELU, drop=drop_path_rate)
+        self.projection = Mlp(
+            in_features=dim,
+            hidden_features=hidden_dim,
+            out_features=hidden_dim,
+            act_layer=nn.GELU,
+            drop=drop_path_rate,
+        )
 
     def forward(self, x):
-        '''
+        """
         x: B, P, D (x, y, cos, sin, w, l, type(4))
-        '''
+        """
         B, P, _ = x.shape
 
-        pos = x[:, :, :7].detach().clone() # x, y, cos, sin
+        pos = x[:, :, :7].detach().clone()  # x, y, cos, sin
         # static: [0,1,0]
         pos[..., -3:] = 0.0
         pos[..., -2] = 1.0
@@ -213,7 +283,15 @@ class StaticFusionEncoder(nn.Module):
 
 
 class LaneFusionEncoder(nn.Module):
-    def __init__(self, lane_len, drop_path_rate=0.3, hidden_dim=192, depth=3, tokens_mlp_dim=64, channels_mlp_dim=128):
+    def __init__(
+        self,
+        lane_len,
+        drop_path_rate=0.3,
+        hidden_dim=192,
+        depth=3,
+        tokens_mlp_dim=64,
+        channels_mlp_dim=128,
+    ):
         super().__init__()
 
         self._lane_len = lane_len
@@ -224,24 +302,47 @@ class LaneFusionEncoder(nn.Module):
         self.traffic_emb = nn.Linear(4, channels_mlp_dim)
         self.is_route_emb = nn.Embedding(2, channels_mlp_dim)
 
-        self.channel_pre_project = Mlp(in_features=8, hidden_features=channels_mlp_dim, out_features=channels_mlp_dim, act_layer=nn.GELU, drop=0.)
-        self.token_pre_project = Mlp(in_features=lane_len, hidden_features=tokens_mlp_dim, out_features=tokens_mlp_dim, act_layer=nn.GELU, drop=0.)
+        self.channel_pre_project = Mlp(
+            in_features=8,
+            hidden_features=channels_mlp_dim,
+            out_features=channels_mlp_dim,
+            act_layer=nn.GELU,
+            drop=0.0,
+        )
+        self.token_pre_project = Mlp(
+            in_features=lane_len,
+            hidden_features=tokens_mlp_dim,
+            out_features=tokens_mlp_dim,
+            act_layer=nn.GELU,
+            drop=0.0,
+        )
 
-        self.blocks = nn.ModuleList([MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)])
+        self.blocks = nn.ModuleList(
+            [
+                MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate)
+                for i in range(depth)
+            ]
+        )
 
         self.norm = nn.LayerNorm(channels_mlp_dim)
-        self.emb_project = Mlp(in_features=channels_mlp_dim, hidden_features=hidden_dim, out_features=hidden_dim, act_layer=nn.GELU, drop=drop_path_rate)
+        self.emb_project = Mlp(
+            in_features=channels_mlp_dim,
+            hidden_features=hidden_dim,
+            out_features=hidden_dim,
+            act_layer=nn.GELU,
+            drop=drop_path_rate,
+        )
 
     def forward(self, x, speed_limit, has_speed_limit, lanes_is_route):
-        '''
+        """
         x: B, P, V, D (x, y, x'-x, y'-y, x_left-x, y_left-y, x_right-x, y_right-y, traffic(4))
         speed_limit: B, P, 1
         has_speed_limit: B, P, 1
-        '''
+        """
         traffic = x[:, :, 0, 8:]
         x = x[..., :8]
 
-        pos = x[:, :, int(self._lane_len / 2), :7].detach().clone() # x, y, x'-x, y'-y
+        pos = x[:, :, int(self._lane_len / 2), :7].detach().clone()  # x, y, x'-x, y'-y
         heading = torch.atan2(pos[..., 3], pos[..., 2])
         pos[..., 2] = torch.cos(heading)
         pos[..., 3] = torch.sin(heading)
@@ -275,10 +376,14 @@ class LaneFusionEncoder(nn.Module):
         # Apply embedding directly to valid speed limit data
         has_speed_limit = has_speed_limit[valid_indices].squeeze(-1)
         speed_limit = speed_limit[valid_indices].squeeze(-1)
-        speed_limit_embedding = torch.zeros((speed_limit.shape[0], self._channel), device=x.device)
+        speed_limit_embedding = torch.zeros(
+            (speed_limit.shape[0], self._channel), device=x.device
+        )
 
         if has_speed_limit.sum() > 0:
-            speed_limit_with_limit = self.speed_limit_emb(speed_limit[has_speed_limit].unsqueeze(-1))
+            speed_limit_with_limit = self.speed_limit_emb(
+                speed_limit[has_speed_limit].unsqueeze(-1)
+            )
             speed_limit_embedding[has_speed_limit] = speed_limit_with_limit
 
         if (~has_speed_limit).sum() > 0:
@@ -289,29 +394,38 @@ class LaneFusionEncoder(nn.Module):
 
         # Process traffic lights directly for valid positions
         traffic = traffic[valid_indices]
-        traffic_light_embedding = self.traffic_emb(traffic)  # Traffic light embedding for valid data
+        traffic_light_embedding = self.traffic_emb(
+            traffic
+        )  # Traffic light embedding for valid data
 
         # Process route information directly for valid positions
         lanes_is_route = lanes_is_route[valid_indices].squeeze(-1)
         route_embedding = self.is_route_emb(lanes_is_route)
 
-        x = x + speed_limit_embedding + traffic_light_embedding + route_embedding  # [B * P, channels_mlp_dim]
+        x = (
+            x + speed_limit_embedding + traffic_light_embedding + route_embedding
+        )  # [B * P, channels_mlp_dim]
         x = self.emb_project(self.norm(x))  # [B * P, hidden_dim]
 
         x_result = torch.zeros((B * P, x.shape[-1]), device=x.device)
         x_result[valid_indices] = x  # Fill in valid parts
 
-        return x_result.view(B, P, -1) , mask_p.reshape(B, -1), pos.view(B, P, -1)
+        return x_result.view(B, P, -1), mask_p.reshape(B, -1), pos.view(B, P, -1)
 
 
 class FusionEncoder(nn.Module):
-    def __init__(self, hidden_dim=192, num_heads=6, drop_path_rate=0.3, depth=3, device='cuda'):
+    def __init__(
+        self, hidden_dim=192, num_heads=6, drop_path_rate=0.3, depth=3, device="cuda"
+    ):
         super().__init__()
 
         dpr = drop_path_rate
 
         self.blocks = nn.ModuleList(
-            [SelfAttentionBlock(hidden_dim, num_heads, dropout=dpr) for i in range(depth)]
+            [
+                SelfAttentionBlock(hidden_dim, num_heads, dropout=dpr)
+                for i in range(depth)
+            ]
         )
 
         self.norm = nn.LayerNorm(hidden_dim)
