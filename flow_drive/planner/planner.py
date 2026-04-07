@@ -1,16 +1,12 @@
 import os
 import warnings
 import torch
-import time
 import numpy as np
 import numpy.typing as npt
 from shapely.geometry import Point
 from typing import Deque, Dict, List, Type, Optional, Tuple
-import threading
-import pickle
 import uuid
 import glob
-import atexit
 
 warnings.filterwarnings("ignore")
 

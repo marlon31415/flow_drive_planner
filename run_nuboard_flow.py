@@ -1,9 +1,6 @@
 # Useful imports
 import os
-from pathlib import Path
-import tempfile
 import hydra
-import sys
 
 # fmt: off
 port = "6600"
