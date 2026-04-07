@@ -5,6 +5,9 @@
     <a href="https://arxiv.org/abs/2509.21961">
       <img src='https://img.shields.io/badge/arXiv-2509.21961-b31b1b.svg'>
     </a>
+    <a href="https://github.com/psf/black">
+      <img src="https://img.shields.io/badge/code%20style-black-000000.svg">
+    </a>
     </h2>
 </div>
 
