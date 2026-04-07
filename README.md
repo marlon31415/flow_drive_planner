@@ -2,7 +2,9 @@
     <h2>FlowDrive:<br/>moderated flow matching with data balancing for trajectory planning
     <br/>
     <br/>
-    <a href="https://arxiv.org/abs/2509.21961"><img src='https://img.shields.io/badge/arXiv-Page-aff'></a>
+    <a href="https://arxiv.org/abs/2509.21961">
+      <img src='https://img.shields.io/badge/arXiv-2509.21961-b31b1b.svg'>
+    </a>
     </h2>
 </div>
 
