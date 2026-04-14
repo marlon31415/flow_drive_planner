@@ -7,9 +7,19 @@ class MixerBlock(nn.Module):
         super().__init__()
 
         self.norm1 = nn.LayerNorm(channels_mlp_dim)
-        self.channels_mlp = Mlp(in_features=channels_mlp_dim, hidden_features=channels_mlp_dim, act_layer=nn.GELU, drop=drop_path_rate)
+        self.channels_mlp = Mlp(
+            in_features=channels_mlp_dim,
+            hidden_features=channels_mlp_dim,
+            act_layer=nn.GELU,
+            drop=drop_path_rate,
+        )
         self.norm2 = nn.LayerNorm(channels_mlp_dim)
-        self.tokens_mlp = Mlp(in_features=tokens_mlp_dim, hidden_features=tokens_mlp_dim, act_layer=nn.GELU, drop=drop_path_rate)
+        self.tokens_mlp = Mlp(
+            in_features=tokens_mlp_dim,
+            hidden_features=tokens_mlp_dim,
+            act_layer=nn.GELU,
+            drop=drop_path_rate,
+        )
 
     def forward(self, x):
         y = self.norm1(x)

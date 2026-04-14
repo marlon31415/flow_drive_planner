@@ -4,13 +4,23 @@ import torch.nn as nn
 from box import ConfigBox
 
 
-def compute_batch_loss(params: ConfigBox, scene_encoder, noise_pred_net, noise_scheduler, inputs, ego_future, device):
+def compute_batch_loss(
+    params: ConfigBox,
+    scene_encoder,
+    noise_pred_net,
+    noise_scheduler,
+    inputs,
+    ego_future,
+    device,
+):
     B = ego_future.shape[0]
     obs_cond = scene_encoder(inputs)
 
     noise = torch.randn(ego_future.shape, device=device)  # [B, T, 3 or 4]
 
-    ego_current_state = inputs["ego_current_state"][..., :4]  # [B, 10] -> [B, 4], x, y, cos, sin
+    ego_current_state = inputs["ego_current_state"][
+        ..., :4
+    ]  # [B, 10] -> [B, 4], x, y, cos, sin
 
     t_idx = torch.randint(0, noise_scheduler.config.num_train_timesteps, (B,))
 

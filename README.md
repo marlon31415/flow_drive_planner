@@ -2,7 +2,12 @@
     <h2>FlowDrive:<br/>moderated flow matching with data balancing for trajectory planning
     <br/>
     <br/>
-    <a href="https://arxiv.org/abs/2509.21961"><img src='https://img.shields.io/badge/arXiv-Page-aff'></a>
+    <a href="https://arxiv.org/abs/2509.21961">
+      <img src='https://img.shields.io/badge/arXiv-2509.21961-b31b1b.svg'>
+    </a>
+    <a href="https://github.com/psf/black">
+      <img src="https://img.shields.io/badge/code%20style-black-000000.svg">
+    </a>
     </h2>
 </div>
 
@@ -14,15 +19,15 @@
 All demonstration GIFs correspond to figures in the paper.
 
 ### Figure 7: Challenging Scenarios on nuPlan (Rows 1–4)
-| Row 1 | Row 2 |
-|:-----:|:-----:|
+|                          Row 1                           |                          Row 2                           |
+| :------------------------------------------------------: | :------------------------------------------------------: |
 | ![Fig7 Row1](videos/challenging_scenarios/Fig7_row1.gif) | ![Fig7 Row2](videos/challenging_scenarios/Fig7_row2.gif) |
-| Row 3 | Row 4 |
+|                          Row 3                           |                          Row 4                           |
 | ![Fig7 Row3](videos/challenging_scenarios/Fig7_row3.gif) | ![Fig7 Row4](videos/challenging_scenarios/Fig7_row4.gif) |
 
 ### Figure 8: Challenging Scenarios on InterPlan (Rows 1–2)
-| Row 1 | Row 2 |
-|:-----:|:-----:|
+|                          Row 1                           |                          Row 2                           |
+| :------------------------------------------------------: | :------------------------------------------------------: |
 | ![Fig8 Row1](videos/challenging_scenarios/Fig8_row1.gif) | ![Fig8 Row2](videos/challenging_scenarios/Fig8_row2.gif) |
 
 ## Getting Started

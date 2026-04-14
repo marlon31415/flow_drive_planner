@@ -7,7 +7,9 @@ from nuplan.common.actor_state.state_representation import StateSE2
 from nuplan.common.maps.abstract_map import AbstractMap
 from nuplan.common.maps.abstract_map_objects import RoadBlockGraphEdgeMapObject
 from nuplan.common.maps.maps_datatypes import SemanticMapLayer
-from nuplan.planning.simulation.occupancy_map.strtree_occupancy_map import STRTreeOccupancyMapFactory
+from nuplan.planning.simulation.occupancy_map.strtree_occupancy_map import (
+    STRTreeOccupancyMapFactory,
+)
 from nuplan.common.maps.abstract_map import AbstractMap
 from nuplan.common.maps.abstract_map_objects import RoadBlockGraphEdgeMapObject
 
@@ -15,13 +17,17 @@ from nuplan.common.maps.abstract_map_objects import RoadBlockGraphEdgeMapObject
 def normalize_angle(angle: np.ndarray):
     return (angle + np.pi) % (2 * np.pi) - np.pi
 
+
 class BreadthFirstSearchRoadBlock:
     """
     A class that performs iterative breadth first search. The class operates on the roadblock graph.
     """
 
     def __init__(
-        self, start_roadblock_id: int, map_api: Optional[AbstractMap], forward_search: str = True
+        self,
+        start_roadblock_id: int,
+        map_api: Optional[AbstractMap],
+        forward_search: str = True,
     ):
         """
         Constructor of BreadthFirstSearchRoadBlock class
@@ -84,7 +90,9 @@ class BreadthFirstSearchRoadBlock:
                 break
 
             neighbors = (
-                current_edge.outgoing_edges if self._forward_search else current_edge.incoming_edges
+                current_edge.outgoing_edges
+                if self._forward_search
+                else current_edge.incoming_edges
             )
 
             # Populate queue

@@ -11,8 +11,9 @@ from mmengine import fileio
 from box import ConfigBox
 
 from diffusers.training_utils import EMAModel
-from diffusers.schedulers.scheduling_flow_match_euler_discrete import \
-    FlowMatchEulerDiscreteScheduler
+from diffusers.schedulers.scheduling_flow_match_euler_discrete import (
+    FlowMatchEulerDiscreteScheduler,
+)
 
 
 _CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
@@ -24,7 +25,9 @@ def _resolve_default_paths(params):
     if not dp.get("normalization_file_path"):
         dp.normalization_file_path = os.path.join(_CONFIG_DIR, "normalization.json")
     if not dp.get("ego_future_clusters_path"):
-        dp.ego_future_clusters_path = os.path.join(_CONFIG_DIR, "ego_future_clusters.pkl")
+        dp.ego_future_clusters_path = os.path.join(
+            _CONFIG_DIR, "ego_future_clusters.pkl"
+        )
     return params
 
 
@@ -37,9 +40,13 @@ def load_params(params_file):
 
 def load_logged_parameters(experiment_name: str, run_name: str):
     """Load the logged parameters from MLflow."""
-    mlflow.set_tracking_uri(os.path.join(os.path.dirname(__file__), "..", "..", "mlruns"))  # Set the MLflow tracking URI
+    mlflow.set_tracking_uri(
+        os.path.join(os.path.dirname(__file__), "..", "..", "mlruns")
+    )  # Set the MLflow tracking URI
     experiment_id = mlflow.get_experiment_by_name(experiment_name).experiment_id
-    runs = mlflow.search_runs(experiment_ids=[experiment_id], filter_string="run_name = '{}'".format(run_name))
+    runs = mlflow.search_runs(
+        experiment_ids=[experiment_id], filter_string="run_name = '{}'".format(run_name)
+    )
     # Get the parameters of the latest run from runs
     latest_run_id = runs.iloc[0].run_id
     run = mlflow.get_run(latest_run_id)
@@ -47,7 +54,9 @@ def load_logged_parameters(experiment_name: str, run_name: str):
     return params, latest_run_id
 
 
-def correct_params_from_logged_params(params: ConfigBox, logged_params: dict) -> ConfigBox:
+def correct_params_from_logged_params(
+    params: ConfigBox, logged_params: dict
+) -> ConfigBox:
     for key1, value1 in params.to_dict().items():
         if key1 == "ddpo":
             # Skip ddpo parameters, they are not logged
@@ -69,7 +78,7 @@ def correct_params_from_logged_params(params: ConfigBox, logged_params: dict) ->
 
 
 def openjson(path):
-    value  = fileio.get_text(path)
+    value = fileio.get_text(path)
     dict = json.loads(value)
     return dict
 
@@ -90,39 +99,55 @@ def set_seed(s):
 
 
 def batch_to_tensor(batch, device):
-    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+    return {
+        k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()
+    }
 
 
 def batch_to_non_batched_numpy(batch):
-    return {k: v.squeeze(0).cpu().numpy() if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+    return {
+        k: v.squeeze(0).cpu().numpy() if isinstance(v, torch.Tensor) else v
+        for k, v in batch.items()
+    }
 
 
 def get_diffuser(params: ConfigBox):
     action_dim = 4
     pred_horizon = params.diffuser.pred_horizon + 1  # Append the current ego state
     from flow_drive.model.module.dit import DiT
+
     noise_pred_net = DiT(
         n_blocks=params.diffuser.n_blocks,
         action_dim=action_dim,
         pred_horizon=pred_horizon,
         hidden_dim=params.diffuser.hidden_dim,
         heads=params.diffuser.num_heads,
-        dropout=params.diffuser.dropout
+        dropout=params.diffuser.dropout,
     )
     return noise_pred_net
 
 
 def get_encoder(params: ConfigBox):
     from flow_drive.model.module.encoder import Encoder
+
     encoder = Encoder(params.encoder)
     return encoder
 
 
-def load_checkpoint(run_id, epoch_number=None, artifact_subdir="checkpoints", device="cpu"):
+def load_checkpoint(
+    run_id, epoch_number=None, artifact_subdir="checkpoints", device="cpu"
+):
     # Construct the artifact path for the checkpoints folder
     artifact_path = os.path.join(
-        os.path.dirname(__file__), "..", "..", "mlruns",
-        "0", run_id, "artifacts", artifact_subdir)
+        os.path.dirname(__file__),
+        "..",
+        "..",
+        "mlruns",
+        "0",
+        run_id,
+        "artifacts",
+        artifact_subdir,
+    )
     # List all checkpoint files
     checkpoint_files = [f for f in os.listdir(artifact_path) if f.endswith(".pth")]
     if not checkpoint_files:
@@ -132,12 +157,16 @@ def load_checkpoint(run_id, epoch_number=None, artifact_subdir="checkpoints", de
     if epoch_number is not None:
         checkpoint_filename = f"epoch_{epoch_number}_checkpoint.pth"
         if checkpoint_filename not in checkpoint_files:
-            raise FileNotFoundError(f"No checkpoint file found for epoch {epoch_number}")
+            raise FileNotFoundError(
+                f"No checkpoint file found for epoch {epoch_number}"
+            )
         else:
             checkpoint_path = os.path.join(artifact_path, checkpoint_filename)
     else:
         # Load the latest checkpoint based on epoch number in filename
-        checkpoint_files.sort(key=lambda f: int(f.split("_")[1]))  # Assumes filenames like 'epoch_XX_checkpoint.pth'
+        checkpoint_files.sort(
+            key=lambda f: int(f.split("_")[1])
+        )  # Assumes filenames like 'epoch_XX_checkpoint.pth'
         checkpoint_path = os.path.join(artifact_path, checkpoint_files[-1])
     print(f"Loading checkpoint from: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -152,18 +181,28 @@ def load_checkpoint_directly(params, ckpt_path, device="cpu"):
     print(f"Loading checkpoint from: {ckpt_path}")
     checkpoint = torch.load(ckpt_path, map_location=device)
     if "ema_encoder_state_dict" in checkpoint:
-        ema = EMAModel(parameters=scene_encoder.parameters(), power=params.train.ema_power)
-        ema.load_state_dict(checkpoint['ema_encoder_state_dict'])
+        ema = EMAModel(
+            parameters=scene_encoder.parameters(), power=params.train.ema_power
+        )
+        ema.load_state_dict(checkpoint["ema_encoder_state_dict"])
         ema.copy_to(scene_encoder.parameters())
     else:
         print("No scene encoder state dict found in checkpoint, using default encoder.")
     if "ema_state_dict" in checkpoint or "ema_decoder_state_dict" in checkpoint:
-        key = 'ema_decoder_state_dict' if 'ema_decoder_state_dict' in checkpoint else 'ema_state_dict'
-        ema = EMAModel(parameters=noise_pred_net.parameters(), power=params.train.ema_power)
+        key = (
+            "ema_decoder_state_dict"
+            if "ema_decoder_state_dict" in checkpoint
+            else "ema_state_dict"
+        )
+        ema = EMAModel(
+            parameters=noise_pred_net.parameters(), power=params.train.ema_power
+        )
         ema.load_state_dict(checkpoint[key])
         ema.copy_to(noise_pred_net.parameters())
     else:
-        print("No noise prediction net state dict found in checkpoint, using default noise prediction net.")
+        print(
+            "No noise prediction net state dict found in checkpoint, using default noise prediction net."
+        )
     return scene_encoder, noise_pred_net
 
 
@@ -172,22 +211,38 @@ def load_from_checkpoints(run_id, epoch, params):
     noise_pred_net = get_diffuser(params)
     checkpoint = load_checkpoint(run_id, epoch)
     if "ema_encoder_state_dict" in checkpoint:
-        ema = EMAModel(parameters=scene_encoder.parameters(), power=params.train.ema_power)
-        ema.load_state_dict(checkpoint['ema_encoder_state_dict'])
+        ema = EMAModel(
+            parameters=scene_encoder.parameters(), power=params.train.ema_power
+        )
+        ema.load_state_dict(checkpoint["ema_encoder_state_dict"])
         ema.copy_to(scene_encoder.parameters())
     else:
         print("No scene encoder state dict found in checkpoint, using default encoder.")
     if "ema_state_dict" in checkpoint or "ema_decoder_state_dict" in checkpoint:
-        key = 'ema_decoder_state_dict' if 'ema_decoder_state_dict' in checkpoint else 'ema_state_dict'
-        ema = EMAModel(parameters=noise_pred_net.parameters(), power=params.train.ema_power)
+        key = (
+            "ema_decoder_state_dict"
+            if "ema_decoder_state_dict" in checkpoint
+            else "ema_state_dict"
+        )
+        ema = EMAModel(
+            parameters=noise_pred_net.parameters(), power=params.train.ema_power
+        )
         ema.load_state_dict(checkpoint[key])
         ema.copy_to(noise_pred_net.parameters())
     else:
-        print("No noise prediction net state dict found in checkpoint, using default noise prediction net.")
+        print(
+            "No noise prediction net state dict found in checkpoint, using default noise prediction net."
+        )
     return scene_encoder, noise_pred_net
 
 
-def load_trained_models(params: ConfigBox, mlflow_exp_name: str, run_name: str, epoch: int, device: str = "cpu"):
+def load_trained_models(
+    params: ConfigBox,
+    mlflow_exp_name: str,
+    run_name: str,
+    epoch: int,
+    device: str = "cpu",
+):
     logged_params, run_id = load_logged_parameters(mlflow_exp_name, run_name)
     params = correct_params_from_logged_params(params, logged_params)
     encoder, decoder = load_from_checkpoints(run_id, epoch, params)
@@ -195,15 +250,19 @@ def load_trained_models(params: ConfigBox, mlflow_exp_name: str, run_name: str, 
 
 
 def get_noise_scheduler(params: ConfigBox):
-    return FlowMatchEulerDiscreteScheduler(num_train_timesteps=params.inference.flow_train_iter)
+    return FlowMatchEulerDiscreteScheduler(
+        num_train_timesteps=params.inference.flow_train_iter
+    )
 
 
 def delete_ghost_runs(experiment_name: str):
     # Get active run IDs from MLflow
-    mlflow.set_tracking_uri(os.path.join(os.path.dirname(__file__), "..", "..", "mlruns"))  # Set the MLflow tracking URI
+    mlflow.set_tracking_uri(
+        os.path.join(os.path.dirname(__file__), "..", "..", "mlruns")
+    )  # Set the MLflow tracking URI
     experiment_id = mlflow.get_experiment_by_name(experiment_name).experiment_id
     active_runs = mlflow.search_runs(experiment_ids=[experiment_id])
-    active_run_ids = set(active_runs['run_id'].tolist())
+    active_run_ids = set(active_runs["run_id"].tolist())
 
     print(f"Active runs: {active_run_ids}")
 
@@ -228,6 +287,3 @@ def delete_ghost_runs(experiment_name: str):
                 print(f"Deleted: {run_folder_path}")
             except Exception as e:
                 print(f"Error deleting {run_folder_path}: {e}")
-
-
-
