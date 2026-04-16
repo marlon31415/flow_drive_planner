@@ -215,7 +215,6 @@ def train_gpu_adaptive(params: ConfigBox):
                     # Log all metrics to MLflow
                     mlflow.log_metric("loss", accumulated_loss, step=step)
 
-                step += 1
                 accumulated_loss = 0.0
 
         if local_rank == 0:  # Only the rank 0 process will log and save models
