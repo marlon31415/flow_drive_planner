@@ -76,15 +76,6 @@ if __name__ == "__main__":
     parser.add_argument('--total_scenarios', type=int, default=10, help='limit total number of scenarios')
     parser.add_argument('--shuffle_scenarios', type=bool, default=False, help='shuffle scenarios')
     parser.add_argument('--split', type=str, default='train', help='data split to process (train, val, val14)')
-
-    parser.add_argument('--agent_num', type=int, help='number of agents', default=32)
-    parser.add_argument('--static_objects_num', type=int, help='number of static objects', default=5)
-
-    parser.add_argument('--lane_len', type=int, help='number of lane point', default=20)
-    parser.add_argument('--lane_num', type=int, help='number of lanes', default=70)
-
-    parser.add_argument('--route_len', type=int, help='number of route lane point', default=20)
-    parser.add_argument('--route_num', type=int, help='number of route lanes', default=25)
     args = parser.parse_args()
     # fmt: on
 
