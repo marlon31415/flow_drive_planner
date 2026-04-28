@@ -1,10 +1,12 @@
 import os
 import argparse
 import json
+from pathlib import Path
 
 from flow_drive.data_process.data_processor import DataProcessor
 from flow_drive.utils.train_utils import load_params
 
+import interplan
 from nuplan.planning.utils.multithreading.worker_parallel import (
     SingleMachineParallelExecutor,
 )
@@ -75,7 +77,7 @@ if __name__ == "__main__":
     parser.add_argument('--scenarios_per_type', type=int, default=None, help='number of scenarios per type')
     parser.add_argument('--total_scenarios', type=int, default=10, help='limit total number of scenarios')
     parser.add_argument('--shuffle_scenarios', type=bool, default=False, help='shuffle scenarios')
-    parser.add_argument('--split', type=str, default='train', help='data split to process (train, val, val14)')
+    parser.add_argument('--split', type=str, default='train', help='data split to process (train, val, val14, interplan)')
     args = parser.parse_args()
     # fmt: on
 
@@ -86,15 +88,19 @@ if __name__ == "__main__":
         os.path.join(os.path.dirname(__file__), "flow_drive", "config", "config.yaml")
     )
     params.data_processing.save_path = args.save_path
+    if args.split == "interplan":
+        params.data_processing.interplan = True
     processor = DataProcessor(params.data_processing)
 
     sensor_root = None
     db_files = None
     log_names = None
 
-    # Preprocess the training or validation data
+    # Preprocess the training, validation or test data
     if args.split == "train":
         scenarios = "nuplan_train.json"
+    elif args.split == "interplan":
+        scenarios = "nuplan_test.json"
     else:  # "val" or "val14"
         scenarios = "nuplan_val.json"
     with open(
@@ -124,6 +130,53 @@ if __name__ == "__main__":
                 args.shuffle_scenarios,
                 log_names=None,
                 scenario_tokens=val14_tokens,
+            )
+        )
+    elif args.split == "interplan":
+        interplan_params = load_params(
+            os.path.join(
+                Path(
+                    interplan.__path__[0],
+                    "planning",
+                    "script",
+                    "config",
+                    "common",
+                    "scenario_filter",
+                    "benchmark_scenarios.yaml",
+                )
+            )
+        )
+        interplan_benchmark_tokens = interplan_params.scenario_tokens.to_list()
+        # Remove descriptors (e.g., "-s0", "-lg") and duplicates
+        interplan_benchmark_tokens = list(
+            set([token.split("-")[0] for token in interplan_benchmark_tokens])
+        )
+        interplan_modifications = load_params(
+            os.path.join(
+                Path(
+                    interplan.__path__[0],
+                    "planning",
+                    "script",
+                    "config",
+                    "common",
+                    "scenario_filter",
+                    "modifications",
+                    "interPlan_modifications.yaml",
+                )
+            )
+        )
+        interplan_mod_details = interplan_modifications[
+            "modification_details_dictionary"
+        ]
+        interplan_mod_tokens = list(interplan_mod_details.keys())
+        interplan_tokens = list(set(interplan_benchmark_tokens + interplan_mod_tokens))
+        scenario_filter = ScenarioFilter(
+            *get_filter_parameters(
+                args.scenarios_per_type,
+                args.total_scenarios,
+                args.shuffle_scenarios,
+                log_names=log_names,
+                scenario_tokens=interplan_tokens,
             )
         )
     else:
@@ -156,6 +209,8 @@ if __name__ == "__main__":
         json_list_path = os.path.join(args.save_path, "scenarios_validation.json")
     elif args.split == "val14":
         json_list_path = os.path.join(args.save_path, "scenarios_val14.json")
+    elif args.split == "interplan":
+        json_list_path = os.path.join(args.save_path, "scenarios_interplan.json")
     with open(json_list_path, "w") as json_file:
         json.dump(npz_files, json_file, indent=4)
 

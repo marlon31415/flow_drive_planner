@@ -1,6 +1,9 @@
 import numpy as np
+import os
+from pathlib import Path
 from tqdm import tqdm
 
+import interplan
 from nuplan.common.actor_state.state_representation import Point2D
 
 from flow_drive.data_process.roadblock_utils import route_roadblock_correction
@@ -19,6 +22,7 @@ from flow_drive.data_process.ego_process import (
 )
 from flow_drive.data_process.utils import convert_to_model_inputs
 from flow_drive.data_process.utils import convert_absolute_quantities_to_relative
+from flow_drive.utils.train_utils import load_params
 
 import multiprocessing
 from multiprocessing import Process, Queue
@@ -61,6 +65,8 @@ class DataProcessor(object):
             "RIGHT_BOUNDARY": config.lane_len,
             "ROUTE_LANES": config.route_len,
         }  # maximum number of points per feature to extract per feature layer.
+
+        self.interplan = config.interplan
 
     # Use for inference
     def observation_adapter(
@@ -274,6 +280,63 @@ class DataProcessor(object):
         """
         routing
         """
+        if self.interplan:
+            interplan_modifications = load_params(
+                os.path.join(
+                    Path(
+                        interplan.__path__[0],
+                        "planning",
+                        "script",
+                        "config",
+                        "common",
+                        "scenario_filter",
+                        "modifications",
+                        "interPlan_modifications.yaml",
+                    )
+                )
+            )
+            interplan_mod_details = interplan_modifications.get(
+                "modification_details_dictionary"
+            )
+            if token in interplan_mod_details:
+                # There is a token ('d480a5d2b0fe5fe6') which is not in interPlan_modifications.yaml
+                # There are also 2 tokens which are in interPlan_modifications.yaml but not in benchmark_scenarios.yaml ('be26ad0fc1035314', '2d754c5d1e325ba4')
+                interplan_mod_details_goals = interplan_mod_details[token]["goal"]
+                interplan_goal_left = interplan_mod_details_goals["left"]
+                interplan_goal_right = interplan_mod_details_goals["right"]
+                interplan_goals_straight = interplan_mod_details_goals["straight"]
+                interplan_goals = {
+                    "goal_abs_inter_left": (
+                        np.array(
+                            [float(x.strip()) for x in interplan_goal_left.split(",")]
+                        )
+                        if interplan_goal_left is not None
+                        else None
+                    ),
+                    "goal_abs_inter_right": (
+                        np.array(
+                            [float(x.strip()) for x in interplan_goal_right.split(",")]
+                        )
+                        if interplan_goal_right is not None
+                        else None
+                    ),
+                    "goal_abs_inter_straight": (
+                        np.array(
+                            [
+                                float(x.strip())
+                                for x in interplan_goals_straight.split(",")
+                            ]
+                        )
+                        if interplan_goals_straight is not None
+                        else None
+                    ),
+                }
+            else:
+                interplan_goals = {
+                    "goal_abs_inter_left": None,
+                    "goal_abs_inter_right": None,
+                    "goal_abs_inter_straight": None,
+                }
         route_goal_horizon = 60  # seconds
         sample_frequency = 10  # Hz
         long_term_future_trajectory = list(
@@ -306,6 +369,9 @@ class DataProcessor(object):
             "epsg": cs,
             "routing_horizon_s": future_trajectory_length,
         }
+        if self.interplan:
+            route.update(interplan_goals)
+
         # gather data
         data = {
             "map_name": map_name,
