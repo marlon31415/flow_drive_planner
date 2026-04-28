@@ -271,16 +271,53 @@ class DataProcessor(object):
             ego_agent_past, time_stamps_past
         )
 
+        """
+        routing
+        """
+        route_goal_horizon = 60  # seconds
+        sample_frequency = 10  # Hz
+        long_term_future_trajectory = list(
+            scenario.get_ego_future_trajectory(
+                iteration=0,
+                num_samples=sample_frequency * route_goal_horizon,
+                time_horizon=route_goal_horizon,
+            )
+        )
+        future_trajectory_length = len(long_term_future_trajectory) / sample_frequency
+        if future_trajectory_length < route_goal_horizon:
+            print(
+                f"Warning: scenario {token} in map {map_name} has only {future_trajectory_length} seconds of future trajectory for routing goal."
+            )
+        goal = long_term_future_trajectory[-1]
+        # Determine coordinate system EPSG based on map name
+        map_name = scenario._map_name
+        if map_name == "us-ma-boston":
+            cs = 32619  # UTM 19N
+        if map_name == "us-pa-pittsburgh-hazelwood":
+            cs = 32617  # UTM 17N
+        if map_name == "sg-one-north":
+            cs = 32648  # UTM 48N
+        if map_name == "us-nv-las-vegas-strip":
+            cs = 32611  # UTM 11N
+
+        route = {
+            "start_abs": np.array([ego_state.rear_axle.x, ego_state.rear_axle.y]),
+            "goal_abs": np.array([goal.rear_axle.x, goal.rear_axle.y]),
+            "epsg": cs,
+            "routing_horizon_s": future_trajectory_length,
+        }
         # gather data
         data = {
             "map_name": map_name,
             "token": token,
             "scenario_type": scenario_type,
+            "anchor_ego_state": anchor_ego_state,
             "ego_current_state": ego_current_state,
             "ego_agent_future": ego_agent_future,
             "neighbor_agents_past": neighbor_agents_past,
             "neighbor_agents_future": neighbor_agents_future,
             "static_objects": static_objects,
+            "route": route,
         }
         data.update(vector_map)
 
