@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "flow_drive"
 version = "1.0.0"
 description = ""
-requires-python = ">=3.9"
+requires-python = ">=3.9.12"
 authors = [
     { name = "anonymous" }
 ]
@@ -17,6 +17,9 @@ classifiers = [
     "License :: Free for non-commercial use"
 ]
 dependencies = [
+    "interplan",
+    "nuplan-devkit",
+    "tuplan-garage",
     "catalyst>=22.4",
     "config-box>=0.2.1600119743",
     "diffusers>=0.36.0",
@@ -47,4 +50,20 @@ include-package-data = true
     "**/*.pth",
     "**/*.yaml"
 ]
+
+[tool.uv.sources]
+nuplan-devkit = { git = "https://github.com/marlon31415/nuplan-devkit" }
+tuplan-garage = { git = "https://github.com/marlon31415/tuplan_garage" }
+interplan = { git = "https://github.com/ll-nick/interPlan" }
+route_language_encoder = { path = "../route_language_encoder" }
+route_description_generation = { path = "../route_description_generation" }
+
+[tool.uv]
+override-dependencies = [
+    # Flowdrive and nuplan-devkit have conflicting dependencies, so we need to override them here
+    "pytorch-lightning==2.0.1",
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+]
+prerelease = "allow"
 
