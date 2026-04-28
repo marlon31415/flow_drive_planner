@@ -75,6 +75,7 @@ if __name__ == "__main__":
     parser.add_argument('--scenarios_per_type', type=int, default=None, help='number of scenarios per type')
     parser.add_argument('--total_scenarios', type=int, default=10, help='limit total number of scenarios')
     parser.add_argument('--shuffle_scenarios', type=bool, default=False, help='shuffle scenarios')
+    parser.add_argument('--split', type=str, default='train', help='data split to process (train, val, val14)')
 
     parser.add_argument('--agent_num', type=int, help='number of agents', default=32)
     parser.add_argument('--static_objects_num', type=int, help='number of static objects', default=5)
@@ -100,11 +101,13 @@ if __name__ == "__main__":
     db_files = None
     log_names = None
 
-    # Only preprocess the training data
+    # Preprocess the training or validation data
+    if args.split == "train":
+        scenarios = "nuplan_train.json"
+    else:  # "val" or "val14"
+        scenarios = "nuplan_val.json"
     with open(
-        os.path.join(os.path.dirname(__file__), "nuplan_train.json"),
-        "r",
-        encoding="utf-8",
+        os.path.join(os.path.dirname(__file__), scenarios), "r", encoding="utf-8"
     ) as file:
         log_names = json.load(file)
 
@@ -112,14 +115,35 @@ if __name__ == "__main__":
     builder = NuPlanScenarioBuilder(
         args.data_path, args.map_path, sensor_root, db_files, map_version
     )
-    scenario_filter = ScenarioFilter(
-        *get_filter_parameters(
-            args.scenarios_per_type,
-            args.total_scenarios,
-            args.shuffle_scenarios,
-            log_names=log_names,
+    if args.split == "val14":
+        val14_params = load_params(
+            os.path.join(
+                os.path.dirname(__file__),
+                "flow_drive",
+                "config",
+                "scenario_filter",
+                "val14.yaml",
+            )
         )
-    )
+        val14_tokens = val14_params.scenario_tokens.to_list()
+        scenario_filter = ScenarioFilter(
+            *get_filter_parameters(
+                args.scenarios_per_type,
+                args.total_scenarios,
+                args.shuffle_scenarios,
+                log_names=None,
+                scenario_tokens=val14_tokens,
+            )
+        )
+    else:
+        scenario_filter = ScenarioFilter(
+            *get_filter_parameters(
+                args.scenarios_per_type,
+                args.total_scenarios,
+                args.shuffle_scenarios,
+                log_names=log_names,
+            )
+        )
 
     print("Loading scenarios...")
     worker = SingleMachineParallelExecutor(use_process_pool=True)
@@ -135,7 +159,12 @@ if __name__ == "__main__":
     npz_files = [f for f in os.listdir(args.save_path) if f.endswith(".npz")]
 
     # Save the list to a JSON file
-    json_list_path = os.path.join(args.save_path, "scenarios_training.json")
+    if args.split == "train":
+        json_list_path = os.path.join(args.save_path, "scenarios_training.json")
+    elif args.split == "val":
+        json_list_path = os.path.join(args.save_path, "scenarios_validation.json")
+    elif args.split == "val14":
+        json_list_path = os.path.join(args.save_path, "scenarios_val14.json")
     with open(json_list_path, "w") as json_file:
         json.dump(npz_files, json_file, indent=4)
 
