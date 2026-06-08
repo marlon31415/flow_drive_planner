@@ -173,6 +173,8 @@ def train_gpu_adaptive(params: ConfigBox):
     start_epoch = 0
     step = 0
     accumulated_loss = 0.0
+    accumulated_diffusion_loss = 0.0
+    accumulated_route_aux_loss = 0.0
 
     # Training loop
     for epoch_idx in range(start_epoch, params.train.num_epochs + 1):
@@ -214,6 +216,12 @@ def train_gpu_adaptive(params: ConfigBox):
                     loss.backward()
 
             accumulated_loss += loss.item()
+            accumulated_diffusion_loss += (
+                loss_components["diffusion_loss"].item() / gradient_accumulation_steps
+            )
+            accumulated_route_aux_loss += (
+                loss_components["route_aux_loss"].item() / gradient_accumulation_steps
+            )
 
             # Perform optimizer step only after accumulating enough gradients
             if perform_step:
@@ -228,7 +236,13 @@ def train_gpu_adaptive(params: ConfigBox):
 
                 # Log the accumulated loss
                 epoch_loss.append(accumulated_loss)
-                batch_iterator.set_postfix({"loss": f"{accumulated_loss:.4f}"})
+                batch_iterator.set_postfix(
+                    {
+                        "loss": f"{accumulated_loss:.4f}",
+                        "diffusion_loss": f"{accumulated_diffusion_loss:.4f}",
+                        "route_aux_loss": f"{accumulated_route_aux_loss:.4f}",
+                    }
+                )
 
                 step += 1  # Increment step counter for logging
 
@@ -237,13 +251,15 @@ def train_gpu_adaptive(params: ConfigBox):
                     mlflow.log_metrics(
                         {
                             "loss": accumulated_loss,
-                            "diffusion_loss": loss_components["diffusion_loss"].item(),
-                            "route_aux_loss": loss_components["route_aux_loss"].item(),
+                            "diffusion_loss": accumulated_diffusion_loss,
+                            "route_aux_loss": accumulated_route_aux_loss,
                         },
                         step=step,
                     )
 
                 accumulated_loss = 0.0
+                accumulated_diffusion_loss = 0.0
+                accumulated_route_aux_loss = 0.0
 
         if global_rank == 0:  # Only the global rank 0 process will log and save models
             # Log epoch-level metrics
