@@ -113,7 +113,11 @@ def train_gpu_adaptive(params: ConfigBox):
 
     if global_rank == 0:
         mlflow.start_run()
-        print("New mlflow run: ", mlflow.get_tracking_uri())
+        active_run = mlflow.active_run()
+        run_id = active_run.info.run_id if active_run else "unknown"
+        print(
+            f"\nNew mlflow run:\n\ttracking_uri={mlflow.get_tracking_uri()}\n\trun_id={run_id}\n"
+        )
         for key1, value1 in params.to_dict().items():
             for key2, value2 in value1.items():
                 mlflow.log_param(key1 + "_" + key2, value2)
