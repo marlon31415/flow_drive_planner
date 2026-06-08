@@ -72,7 +72,7 @@ class Encoder(nn.Module):
     def forward(self, inputs):
         ego_anchor = inputs["ego_current_state"][
             ..., :4
-        ]  # [B, 4], x, y, cos, sin; all zero by definition
+        ]  # [B, 4], x, y, cos, sin; ego-local constant (x/y=0, cos/sin=[1,0])
         neighbors = inputs["neighbor_agents_past"]
         static = inputs["static_objects"]
         lanes = inputs["lanes"]
