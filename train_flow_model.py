@@ -191,8 +191,8 @@ def train_gpu_adaptive(params: ConfigBox):
             # Use standard loss function
             loss, _ = compute_batch_loss(
                 params,
-                scene_encoder.module,
-                noise_pred_net.module,
+                scene_encoder,
+                noise_pred_net,
                 noise_scheduler,
                 inputs,
                 ego_future,
