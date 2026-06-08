@@ -194,7 +194,7 @@ def train_gpu_adaptive(params: ConfigBox):
             )
 
             # Use standard loss function
-            loss, _ = compute_batch_loss(
+            loss, _, loss_components = compute_batch_loss(
                 params,
                 scene_encoder,
                 noise_pred_net,
@@ -234,7 +234,14 @@ def train_gpu_adaptive(params: ConfigBox):
 
                 if global_rank == 0 and step % 100 == 0:
                     # Log all metrics to MLflow
-                    mlflow.log_metric("loss", accumulated_loss, step=step)
+                    mlflow.log_metrics(
+                        {
+                            "loss": accumulated_loss,
+                            "diffusion_loss": loss_components["diffusion_loss"].item(),
+                            "route_aux_loss": loss_components["route_aux_loss"].item(),
+                        },
+                        step=step,
+                    )
 
                 accumulated_loss = 0.0
 

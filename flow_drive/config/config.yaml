@@ -36,6 +36,11 @@ encoder:
   static_objects_state_dim: 10
   encoder_drop_path_rate: 0.1
   decoder_drop_path_rate: 0.1
+  route_pool_level: "step"  # "step" or "route" or "none" or "goal" or "points"
+  route_fusion: "r2m"  # "m2r" or "r2m" map-to-route or route-to-map fusion
+  max_route_steps: 3
+  route_aux_loss: False
+  use_spatial_attn_bias: False
 
 diffuser:
   pred_horizon: 40
