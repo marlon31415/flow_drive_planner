@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader, DistributedSampler, WeightedRandomSampl
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from flow_drive.utils.dataset import FlowDriveDataset
+from flow_drive.data_process.utils import route_to_local_frame
 from flow_drive.utils.train_utils import (
     load_params,
     batch_to_tensor,
@@ -186,6 +187,7 @@ def train_gpu_adaptive(params: ConfigBox):
             perform_step = ((batch_idx + 1) % gradient_accumulation_steps == 0) or (
                 batch_idx + 1 == len(train_dataloader)
             )
+            batch = route_to_local_frame(batch)
             inputs = batch_to_tensor(batch, device)
             inputs, ego_future, _ = train_dataloader.dataset.transform_inputs_tensor(
                 inputs
