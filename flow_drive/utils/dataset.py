@@ -26,6 +26,7 @@ from nuplan.planning.scenario_builder.scenario_filter import ScenarioFilter
 from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario_builder import (
     NuPlanScenarioBuilder,
 )
+from route_description_generation.utils.sqlite_utils import load_by_token
 
 
 class ClusterStatsRetriever:
@@ -137,6 +138,12 @@ class FlowDriveDataset(Dataset):
         self.weights_file_extension = "training"
         self.data_dir = config.data_processed_path
         self.data_list = openjson(config.data_processed_list)
+        self.route_data_path = os.path.join(
+            config.data_processed_path, config.route_data
+        )
+        self.route_index_path = os.path.join(
+            config.data_processed_path, config.route_index
+        )
         self.config = config
         self._past_neighbor_num = config.agent_num
         self._predicted_neighbor_num = config.predicted_neighbor_num
@@ -380,6 +387,8 @@ class FlowDriveDataset(Dataset):
         data = opendata(os.path.join(self.data_dir, self.data_list[idx]))
         token = self.data_list[idx].split("_")[-1].split(".")[0]
 
+        anchor_ego_state = data["anchor_ego_state"]
+
         lanes_is_route = data["lanes_is_route"]
 
         ego_current_state = data["ego_current_state"]
@@ -400,6 +409,12 @@ class FlowDriveDataset(Dataset):
 
         static_objects = data["static_objects"]
 
+        route_data = load_by_token(self.route_index_path, self.route_data_path, token)
+        route_description = route_data["routing_data"]["route_description"]
+        route_maneuver_positions = np.array(
+            route_data["routing_data"]["route_maneuver_positions"]
+        )
+
         data = {
             "idx": idx,
             "token": token,
@@ -415,6 +430,9 @@ class FlowDriveDataset(Dataset):
             "route_lanes_speed_limit": route_lanes_speed_limit,
             "route_lanes_has_speed_limit": route_lanes_has_speed_limit,
             "static_objects": static_objects,
+            "route_description": route_description,
+            "route_maneuver_positions": route_maneuver_positions,
+            "anchor_ego_state": anchor_ego_state,
         }
         return data
 
