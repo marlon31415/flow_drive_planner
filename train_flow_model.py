@@ -76,10 +76,12 @@ def train_gpu_adaptive(params: ConfigBox):
 
     dist.init_process_group(backend="nccl", init_method="env://")
     local_rank = int(os.environ["LOCAL_RANK"])
-    world_size = torch.distributed.get_world_size()
+    global_rank = dist.get_rank()
     device = torch.device(f"cuda:{local_rank}")
     torch.cuda.set_device(device)
-    print(f"Local gpu rank: {local_rank}, World size: {world_size}")
+    print(
+        f"Local rank: {local_rank}, Global rank: {global_rank}, World size: {world_size}"
+    )
 
     # Define target configuration (8 GPUs with specific batch size)
     target_world_size = 8
@@ -92,7 +94,7 @@ def train_gpu_adaptive(params: ConfigBox):
     )
     effective_batch_size = current_global_batch_size * gradient_accumulation_steps
 
-    if local_rank == 0:
+    if global_rank == 0:
         print(f"Target global batch size: {target_global_batch_size}")
         print(f"Current global batch size: {current_global_batch_size}")
         print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
@@ -101,7 +103,7 @@ def train_gpu_adaptive(params: ConfigBox):
     # Initialize or resume MLflow
     mlflow.set_tracking_uri(ROOT_DIR + "/mlruns")
 
-    if local_rank == 0:
+    if global_rank == 0:
         mlflow.start_run()
         print("New mlflow run: ", mlflow.get_tracking_uri())
         for key1, value1 in params.to_dict().items():
@@ -140,7 +142,7 @@ def train_gpu_adaptive(params: ConfigBox):
         lr=params.train.learning_rate * lr_scaler,
         weight_decay=params.train.weight_decay,
     )
-    if local_rank == 0:
+    if global_rank == 0:
         print(f"Adaptive learning rate: {params.train.learning_rate * lr_scaler}")
 
     # Adjust scheduler for gradient accumulation
@@ -165,7 +167,7 @@ def train_gpu_adaptive(params: ConfigBox):
         batch_iterator = tqdm(
             train_dataloader,
             desc=f"Processing Epoch {epoch_idx:02d}",
-            disable=local_rank != 0,
+            disable=global_rank != 0,
         )
 
         for batch_idx, batch in enumerate(batch_iterator):
@@ -211,13 +213,13 @@ def train_gpu_adaptive(params: ConfigBox):
 
                 step += 1  # Increment step counter for logging
 
-                if local_rank == 0:
+                if global_rank == 0:
                     # Log all metrics to MLflow
                     mlflow.log_metric("loss", accumulated_loss, step=step)
 
                 accumulated_loss = 0.0
 
-        if local_rank == 0:  # Only the rank 0 process will log and save models
+        if global_rank == 0:  # Only the global rank 0 process will log and save models
             # Log epoch-level metrics
             mlflow.log_metric("epoch_train_loss", np.mean(epoch_loss), step=epoch_idx)
 
@@ -240,7 +242,7 @@ def train_gpu_adaptive(params: ConfigBox):
                 os.remove(checkpoint_path)  # Clean up local copy after logging
                 print(f"Checkpoint for epoch {epoch_idx} saved to MLflow artifacts.")
 
-    if local_rank == 0:
+    if global_rank == 0:
         mlflow.end_run()
     # Clean up DDP
     dist.destroy_process_group()
