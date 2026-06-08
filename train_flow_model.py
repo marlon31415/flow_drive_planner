@@ -77,15 +77,23 @@ def train_gpu_adaptive(params: ConfigBox):
     dist.init_process_group(backend="nccl", init_method="env://")
     local_rank = int(os.environ["LOCAL_RANK"])
     global_rank = dist.get_rank()
+    world_size = dist.get_world_size()
     device = torch.device(f"cuda:{local_rank}")
     torch.cuda.set_device(device)
     print(
         f"Local rank: {local_rank}, Global rank: {global_rank}, World size: {world_size}"
     )
 
-    # Define target configuration (8 GPUs with specific batch size)
+    # Define target configuration (8 GPUs × 350 samples/GPU = 2800 reference effective batch).
+    # target_batch_size_per_gpu may be set independently in config so that reducing
+    # batch_size (to fit smaller VRAM) does NOT accidentally lower the effective batch target.
+    target_batch_size_per_gpu = int(
+        getattr(params.train, "target_batch_size_per_gpu", 350)
+    )
     target_world_size = 8
-    target_global_batch_size = params.train.batch_size * target_world_size
+    target_global_batch_size = (
+        target_batch_size_per_gpu * target_world_size
+    )  # fixed reference: 2800
 
     # Calculate gradient accumulation steps to maintain effective batch size
     current_global_batch_size = params.train.batch_size * world_size
