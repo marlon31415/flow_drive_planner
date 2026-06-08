@@ -183,6 +183,9 @@ def train_gpu_adaptive(params: ConfigBox):
         )
 
         for batch_idx, batch in enumerate(batch_iterator):
+            perform_step = ((batch_idx + 1) % gradient_accumulation_steps == 0) or (
+                batch_idx + 1 == len(train_dataloader)
+            )
             inputs = batch_to_tensor(batch, device)
             inputs, ego_future, _ = train_dataloader.dataset.transform_inputs_tensor(
                 inputs
@@ -202,14 +205,16 @@ def train_gpu_adaptive(params: ConfigBox):
             # Scale loss by gradient accumulation steps to maintain average
             loss = loss / gradient_accumulation_steps
 
-            loss.backward()
+            if perform_step:
+                loss.backward()
+            else:
+                with scene_encoder.no_sync(), noise_pred_net.no_sync():
+                    loss.backward()
 
             accumulated_loss += loss.item()
 
             # Perform optimizer step only after accumulating enough gradients
-            if (batch_idx + 1) % gradient_accumulation_steps == 0 or (
-                batch_idx + 1
-            ) == len(train_dataloader):
+            if perform_step:
                 torch.nn.utils.clip_grad_norm_(opt_params, 5.0)
 
                 optimizer.step()
@@ -225,7 +230,7 @@ def train_gpu_adaptive(params: ConfigBox):
 
                 step += 1  # Increment step counter for logging
 
-                if global_rank == 0:
+                if global_rank == 0 and step % 100 == 0:
                     # Log all metrics to MLflow
                     mlflow.log_metric("loss", accumulated_loss, step=step)
 
