@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader, DistributedSampler, WeightedRandomSampl
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from flow_drive.utils.dataset import FlowDriveDataset
+from flow_drive.data_process.utils import route_to_local_frame
 from flow_drive.utils.train_utils import (
     load_params,
     batch_to_tensor,
@@ -76,14 +77,24 @@ def train_gpu_adaptive(params: ConfigBox):
 
     dist.init_process_group(backend="nccl", init_method="env://")
     local_rank = int(os.environ["LOCAL_RANK"])
-    world_size = torch.distributed.get_world_size()
+    global_rank = dist.get_rank()
+    world_size = dist.get_world_size()
     device = torch.device(f"cuda:{local_rank}")
     torch.cuda.set_device(device)
-    print(f"Local gpu rank: {local_rank}, World size: {world_size}")
+    print(
+        f"Local rank: {local_rank}, Global rank: {global_rank}, World size: {world_size}"
+    )
 
-    # Define target configuration (8 GPUs with specific batch size)
+    # Define target configuration (8 GPUs × 350 samples/GPU = 2800 reference effective batch).
+    # target_batch_size_per_gpu may be set independently in config so that reducing
+    # batch_size (to fit smaller VRAM) does NOT accidentally lower the effective batch target.
+    target_batch_size_per_gpu = int(
+        getattr(params.train, "target_batch_size_per_gpu", 350)
+    )
     target_world_size = 8
-    target_global_batch_size = params.train.batch_size * target_world_size
+    target_global_batch_size = (
+        target_batch_size_per_gpu * target_world_size
+    )  # fixed reference: 2800
 
     # Calculate gradient accumulation steps to maintain effective batch size
     current_global_batch_size = params.train.batch_size * world_size
@@ -92,7 +103,7 @@ def train_gpu_adaptive(params: ConfigBox):
     )
     effective_batch_size = current_global_batch_size * gradient_accumulation_steps
 
-    if local_rank == 0:
+    if global_rank == 0:
         print(f"Target global batch size: {target_global_batch_size}")
         print(f"Current global batch size: {current_global_batch_size}")
         print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
@@ -101,9 +112,13 @@ def train_gpu_adaptive(params: ConfigBox):
     # Initialize or resume MLflow
     mlflow.set_tracking_uri(ROOT_DIR + "/mlruns")
 
-    if local_rank == 0:
+    if global_rank == 0:
         mlflow.start_run()
-        print("New mlflow run: ", mlflow.get_tracking_uri())
+        active_run = mlflow.active_run()
+        run_id = active_run.info.run_id if active_run else "unknown"
+        print(
+            f"\nNew mlflow run:\n\ttracking_uri={mlflow.get_tracking_uri()}\n\trun_id={run_id}\n"
+        )
         for key1, value1 in params.to_dict().items():
             for key2, value2 in value1.items():
                 mlflow.log_param(key1 + "_" + key2, value2)
@@ -140,7 +155,7 @@ def train_gpu_adaptive(params: ConfigBox):
         lr=params.train.learning_rate * lr_scaler,
         weight_decay=params.train.weight_decay,
     )
-    if local_rank == 0:
+    if global_rank == 0:
         print(f"Adaptive learning rate: {params.train.learning_rate * lr_scaler}")
 
     # Adjust scheduler for gradient accumulation
@@ -158,6 +173,8 @@ def train_gpu_adaptive(params: ConfigBox):
     start_epoch = 0
     step = 0
     accumulated_loss = 0.0
+    accumulated_diffusion_loss = 0.0
+    accumulated_route_aux_loss = 0.0
 
     # Training loop
     for epoch_idx in range(start_epoch, params.train.num_epochs + 1):
@@ -165,20 +182,24 @@ def train_gpu_adaptive(params: ConfigBox):
         batch_iterator = tqdm(
             train_dataloader,
             desc=f"Processing Epoch {epoch_idx:02d}",
-            disable=local_rank != 0,
+            disable=global_rank != 0,
         )
 
         for batch_idx, batch in enumerate(batch_iterator):
+            perform_step = ((batch_idx + 1) % gradient_accumulation_steps == 0) or (
+                batch_idx + 1 == len(train_dataloader)
+            )
+            batch = route_to_local_frame(batch)
             inputs = batch_to_tensor(batch, device)
             inputs, ego_future, _ = train_dataloader.dataset.transform_inputs_tensor(
                 inputs
             )
 
             # Use standard loss function
-            loss, _ = compute_batch_loss(
+            loss, _, loss_components = compute_batch_loss(
                 params,
-                scene_encoder.module,
-                noise_pred_net.module,
+                scene_encoder,
+                noise_pred_net,
                 noise_scheduler,
                 inputs,
                 ego_future,
@@ -188,14 +209,22 @@ def train_gpu_adaptive(params: ConfigBox):
             # Scale loss by gradient accumulation steps to maintain average
             loss = loss / gradient_accumulation_steps
 
-            loss.backward()
+            if perform_step:
+                loss.backward()
+            else:
+                with scene_encoder.no_sync(), noise_pred_net.no_sync():
+                    loss.backward()
 
             accumulated_loss += loss.item()
+            accumulated_diffusion_loss += (
+                loss_components["diffusion_loss"].item() / gradient_accumulation_steps
+            )
+            accumulated_route_aux_loss += (
+                loss_components["route_aux_loss"].item() / gradient_accumulation_steps
+            )
 
             # Perform optimizer step only after accumulating enough gradients
-            if (batch_idx + 1) % gradient_accumulation_steps == 0 or (
-                batch_idx + 1
-            ) == len(train_dataloader):
+            if perform_step:
                 torch.nn.utils.clip_grad_norm_(opt_params, 5.0)
 
                 optimizer.step()
@@ -207,17 +236,32 @@ def train_gpu_adaptive(params: ConfigBox):
 
                 # Log the accumulated loss
                 epoch_loss.append(accumulated_loss)
-                batch_iterator.set_postfix({"loss": f"{accumulated_loss:.4f}"})
+                batch_iterator.set_postfix(
+                    {
+                        "loss": f"{accumulated_loss:.4f}",
+                        "diffusion_loss": f"{accumulated_diffusion_loss:.4f}",
+                        "route_aux_loss": f"{accumulated_route_aux_loss:.4f}",
+                    }
+                )
 
                 step += 1  # Increment step counter for logging
 
-                if local_rank == 0:
+                if global_rank == 0 and step % 100 == 0:
                     # Log all metrics to MLflow
-                    mlflow.log_metric("loss", accumulated_loss, step=step)
+                    mlflow.log_metrics(
+                        {
+                            "loss": accumulated_loss,
+                            "diffusion_loss": accumulated_diffusion_loss,
+                            "route_aux_loss": accumulated_route_aux_loss,
+                        },
+                        step=step,
+                    )
 
                 accumulated_loss = 0.0
+                accumulated_diffusion_loss = 0.0
+                accumulated_route_aux_loss = 0.0
 
-        if local_rank == 0:  # Only the rank 0 process will log and save models
+        if global_rank == 0:  # Only the global rank 0 process will log and save models
             # Log epoch-level metrics
             mlflow.log_metric("epoch_train_loss", np.mean(epoch_loss), step=epoch_idx)
 
@@ -240,7 +284,7 @@ def train_gpu_adaptive(params: ConfigBox):
                 os.remove(checkpoint_path)  # Clean up local copy after logging
                 print(f"Checkpoint for epoch {epoch_idx} saved to MLflow artifacts.")
 
-    if local_rank == 0:
+    if global_rank == 0:
         mlflow.end_run()
     # Clean up DDP
     dist.destroy_process_group()

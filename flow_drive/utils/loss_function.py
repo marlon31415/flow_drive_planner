@@ -35,5 +35,27 @@ def compute_batch_loss(
     v_pred = v_pred[:, 1:]
 
     target_v = noise - ego_future
-    loss = nn.functional.mse_loss(v_pred, target_v)
-    return loss, obs_cond
+    diffusion_loss = nn.functional.mse_loss(v_pred, target_v)
+
+    # Auxiliary route prediction loss
+    route_aux_loss = torch.tensor(0.0, device=device)
+    route_logits = obs_cond.get("route_logits")
+    if route_logits is not None:
+        lanes_is_route = obs_cond["lanes_is_route"].squeeze(-1)  # [B, num_lanes]
+        lanes_mask = obs_cond["lanes_mask"]  # [B, num_lanes]
+        valid = ~lanes_mask  # True = valid lane
+        valid_f = valid.to(dtype=route_logits.dtype)
+        bce = nn.functional.binary_cross_entropy_with_logits(
+            route_logits, lanes_is_route.float(), reduction="none"
+        )
+
+        num_valid = valid_f.sum().clamp_min(1.0)
+        route_aux_loss = (bce * valid_f).sum() / num_valid
+
+    lambda_route = 0.01
+    loss = diffusion_loss + lambda_route * route_aux_loss
+    return (
+        loss,
+        obs_cond,
+        {"diffusion_loss": diffusion_loss, "route_aux_loss": route_aux_loss},
+    )

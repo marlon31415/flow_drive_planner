@@ -306,6 +306,51 @@ def vector_set_coordinates_to_local_frame(
     return coords
 
 
+def route_to_local_frame(batch):
+    maneuver_positions = batch["route_maneuver_positions"]
+    anchor_state = batch["anchor_ego_state"]
+
+    assert maneuver_positions.ndim == 3  # (B, num_maneuvers, 2)
+    assert anchor_state.ndim == 2  # (B, 3)
+
+    # maneuver_positions: (B, num_maneuvers, 2)
+    # anchor_state: (B, 3) -> [x, y, heading]
+    B, num_maneuvers, _ = maneuver_positions.shape
+
+    device = torch.device("cpu")
+
+    with torch.no_grad():
+        if isinstance(maneuver_positions, torch.Tensor):
+            device = maneuver_positions.device
+            # Move to CPU + numpy for transformation
+            maneuver_positions = maneuver_positions.detach().cpu().numpy()
+            anchor_state = anchor_state.detach().cpu().numpy()
+
+        transformed = np.zeros_like(maneuver_positions, dtype=np.float32)
+
+        for b in range(B):
+            coords = maneuver_positions[b]
+
+            # mask zero-padded maneuvers
+            zero_mask = np.all(coords == 0.0, axis=-1)
+
+            if np.any(~zero_mask):
+                transformed_coords = coordinates_to_local_frame(
+                    coords=coords[~zero_mask],
+                    anchor_state=anchor_state[b],
+                    precision=np.float32,
+                )
+                transformed[b, ~zero_mask] = transformed_coords
+
+        # Back to torch, same device / dtype as input
+        batch["route_maneuver_positions"] = torch.from_numpy(transformed).to(
+            device=device,
+            dtype=torch.float32,
+        )
+
+    return batch
+
+
 # =====================
 # 3. Numpy-Tensor transformation
 # =====================

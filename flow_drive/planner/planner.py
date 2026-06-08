@@ -74,6 +74,14 @@ from flow_drive.data_process.data_processor import DataProcessor
 from flow_drive.utils.train_utils import load_params, set_seed
 from flow_drive.utils.plot_dataset_scenario import plot_scenario
 
+from route_description_generation.osrm_directions import get_maneuver_positions_osrm
+from route_description_generation.routing_for_nuplan import (
+    call_routing_request_with_retry,
+    routing_to_language,
+)
+from route_description_generation.utils.json_utils import get_token_by_route_start
+from route_description_generation.utils.sqlite_utils import load_by_token
+
 
 def outputs_to_trajectory(
     outputs: torch.Tensor,
@@ -101,6 +109,7 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
         render: bool = False,
         video_dir: str = None,
         emergency_brake_enabled: bool = True,
+        interplan: bool = False,
     ):
         assert device in ["cpu", "cuda"], f"device {device} not supported"
         if device == "cuda":
@@ -137,6 +146,22 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
         self._render = render
         self._video_dir = video_dir
 
+        self._interplan = interplan
+
+        self._route_end = (
+            None  # might differ from mission goal because it comes from route-dataset
+        )
+        self._map_name = None
+        self._epsg = None
+        self._route_data_file = os.path.join(
+            self._params.data_processing.data_processed_path_val,
+            self._params.data_processing.route_data,
+        )
+        self._route_index_file = os.path.join(
+            self._params.data_processing.data_processed_path_val,
+            self._params.data_processing.route_index,
+        )
+
     def name(self) -> str:
         """
         Inherited.
@@ -156,6 +181,7 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
         self._iteration = 0
         self._map_api = initialization.map_api
         self._route_roadblock_ids = initialization.route_roadblock_ids
+        self._mission_goal = initialization.mission_goal
         self._trajectory_scorer.initialize(self._map_api, self._route_roadblock_ids)
 
         self._planner = FlowDrivePlanner(
@@ -176,13 +202,52 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
     ) -> Dict[str, torch.Tensor]:
         history = planner_input.history
         traffic_light_data = list(planner_input.traffic_light_data)
+
+        # Query routing API for live route description
+        route_start = [
+            history.current_state[0].center.x,
+            history.current_state[0].center.y,
+        ]
+        if self._route_end is None:
+            # Only ONCE per simulation:
+            # Search for scenario token in route-dataset and store it
+            token = get_token_by_route_start(self._route_data_file, route_start)
+            route_data = load_by_token(
+                self._route_index_file, self._route_data_file, token
+            )
+            if not self._interplan:
+                self._route_end = route_data["routing_data"]["route_end"]
+            else:
+                self._route_end = np.array([self._mission_goal.x, self._mission_goal.y])
+            self._map_name = route_data["scenario_data"]["map_name"]
+            self._epsg = route_data["routing_data"]["route_epsg"]
+        routing_direction = call_routing_request_with_retry(
+            start=route_start,
+            destination=self._route_end,
+            map_name=self._map_name,
+            cs=f"EPSG:{self._epsg}",
+            routing_service="osrm",
+        )
+        route_description = routing_to_language(
+            routing_direction, routing_service="osrm"
+        )
+        route_maneuver_positions = get_maneuver_positions_osrm(
+            routing_direction, self._epsg
+        )
+
         model_inputs = self._data_processor.observation_adapter(
             history,
             traffic_light_data,
             self._map_api,
             self._route_roadblock_ids,
+            route_maneuver_positions,
             self._device,
         )
+
+        # mock_route_description = "Depart; Continue uturn in 10 meters; Continue uturn in 10 meters; Continue uturn in 10 meters; Arrive at destination in 0 meters"
+        # model_inputs["route_description"] = [mock_route_description]
+        model_inputs["route_description"] = [route_description]
+
         return model_inputs
 
     def compute_planner_trajectory(

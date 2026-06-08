@@ -5,6 +5,9 @@ data_processing:
   data_processed_list:  "/path/to/already/saved/processed/data/scenarios_training.json"  # under the same folder as in the processed data
   normalization_file_path: null   # defaults to bundled flow_drive/config/normalization.json
   ego_future_clusters_path: null  # defaults to bundled flow_drive/config/ego_future_clusters.pkl
+  data_processed_path_val: "/path/to/route/data/for/validation"
+  route_data: "lg_routing_data.jsonl" # under the same folder as in the processed data
+  route_index: "lg_routing_index.sqlite" # under the same folder as in the processed data
   agent_num: 32
   static_objects_num: 5
   predicted_neighbor_num: 10
@@ -33,6 +36,11 @@ encoder:
   static_objects_state_dim: 10
   encoder_drop_path_rate: 0.1
   decoder_drop_path_rate: 0.1
+  route_pool_level: "step"  # "step" or "route" or "none" or "goal" or "points"
+  route_fusion: "r2m"  # "m2r" or "r2m" map-to-route or route-to-map fusion
+  max_route_steps: 3
+  route_aux_loss: False
+  use_spatial_attn_bias: False
 
 diffuser:
   pred_horizon: 40

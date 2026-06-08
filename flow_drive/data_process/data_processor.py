@@ -23,6 +23,7 @@ from flow_drive.data_process.ego_process import (
 from flow_drive.data_process.utils import convert_to_model_inputs
 from flow_drive.data_process.utils import convert_absolute_quantities_to_relative
 from flow_drive.utils.train_utils import load_params
+from flow_drive.data_process.utils import route_to_local_frame
 
 import multiprocessing
 from multiprocessing import Process, Queue
@@ -75,6 +76,7 @@ class DataProcessor(object):
         traffic_light_data,
         map_api,
         route_roadblock_ids,
+        route_maneuver_positions,
         device="cpu",
     ):
         """
@@ -146,12 +148,28 @@ class DataProcessor(object):
             ego_agent_past, time_stamps_past
         )
 
+        """
+        Route
+        """
+        route_batch_local = route_to_local_frame(
+            {
+                "route_maneuver_positions": np.array([route_maneuver_positions]),
+                "anchor_ego_state": anchor_ego_state[np.newaxis, :],
+            }
+        )  # Function is designed to process batches
+        route_maneuver_positions = route_batch_local[
+            "route_maneuver_positions"
+        ].squeeze(
+            0
+        )  # convert_to_model_inputs unsqueezes again
+
         # print("ego current state:", ego_current_state)
 
         data = {
             "neighbor_agents_past": neighbor_agents_past[:, -21:],
             "ego_current_state": ego_current_state,  # ego centric x, y, cos, sin, vx, vy, ax, ay, steering angle, yaw rate, we only use x, y, cos, sin during inference
             "static_objects": static_objects,
+            "route_maneuver_positions": route_maneuver_positions,
         }
         data.update(vector_map)
         data = convert_to_model_inputs(data, device)

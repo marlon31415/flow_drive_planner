@@ -5,6 +5,7 @@ from timm.layers import DropPath
 from box import ConfigBox
 
 from flow_drive.model.module.mixer import MixerBlock
+from route_language_encoder.vocabulary_encoder.encoder import VocabularyRouteEncoder
 
 
 class Encoder(nn.Module):
@@ -27,9 +28,14 @@ class Encoder(nn.Module):
         )
         self.lane_encoder = LaneFusionEncoder(
             config.lane_len,
+            route_pool_level=config.route_pool_level,
+            max_route_steps=config.max_route_steps,
+            route_aux_loss=config.route_aux_loss,
             drop_path_rate=config.encoder_drop_path_rate,
             hidden_dim=config.hidden_dim,
             depth=config.encoder_depth,
+            use_spatial_attn_bias=config.use_spatial_attn_bias,
+            route_fusion=getattr(config, "route_fusion", "r2m"),
         )
 
         self.fusion = FusionEncoder(
@@ -64,12 +70,17 @@ class Encoder(nn.Module):
         nn.init.normal_(self.lane_encoder.traffic_emb.weight, std=0.02)
 
     def forward(self, inputs):
+        ego_anchor = inputs["ego_current_state"][
+            ..., :4
+        ]  # [B, 4], x, y, cos, sin; ego-local constant (x/y=0, cos/sin=[1,0])
         neighbors = inputs["neighbor_agents_past"]
         static = inputs["static_objects"]
         lanes = inputs["lanes"]
         lanes_speed_limit = inputs["lanes_speed_limit"]
         lanes_has_speed_limit = inputs["lanes_has_speed_limit"]
         lanes_is_route = inputs["lanes_is_route"]
+        route_description = inputs["route_description"]
+        route_maneuver_positions = inputs["route_maneuver_positions"]
 
         B = neighbors.shape[0]
 
@@ -77,8 +88,14 @@ class Encoder(nn.Module):
             neighbors
         )
         encoding_static, static_mask, static_pos = self.static_encoder(static)
-        encoding_lanes, lanes_mask, lane_pos = self.lane_encoder(
-            lanes, lanes_speed_limit, lanes_has_speed_limit, lanes_is_route
+        encoding_lanes, lanes_mask, lane_pos, route_logits = self.lane_encoder(
+            lanes,
+            lanes_speed_limit,
+            lanes_has_speed_limit,
+            lanes_is_route,
+            route_description,
+            route_maneuver_positions,
+            ego_anchor,
         )
 
         encoding_input = [encoding_neighbors, encoding_static, encoding_lanes]
@@ -125,6 +142,9 @@ class Encoder(nn.Module):
         return {
             "encoding": encoder_outputs,  # [B, token_num, hidden_dim]
             "mask": encoding_mask,  # [B, token_num]
+            "route_logits": route_logits,  # [B, num_lanes] or None
+            "lanes_is_route": lanes_is_route,  # [B, num_lanes]
+            "lanes_mask": lanes_mask,  # [B, num_lanes]
         }
 
 
@@ -147,6 +167,55 @@ class SelfAttentionBlock(nn.Module):
 
     def forward(self, x, mask):
         x = x + self.drop_path(self.attn(self.norm1(x), x, x, key_padding_mask=mask)[0])
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        return x
+
+
+class CrossAttentionBlock(nn.Module):
+    def __init__(self, dim=192, heads=6, dropout=0.1, mlp_ratio=4.0):
+        super().__init__()
+
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(dim, heads, dropout, batch_first=True)
+
+        self.drop_path = DropPath(dropout) if dropout > 0.0 else nn.Identity()
+        self.norm2 = nn.LayerNorm(dim)
+
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp(
+            in_features=dim,
+            hidden_features=mlp_hidden_dim,
+            act_layer=nn.GELU,
+            drop=dropout,
+        )
+
+    def forward(self, x, context, context_mask=None, attn_bias=None):
+        """
+        x:        [B, N, D]  (queries)
+        context:  [B, M, D]  (keys / values)
+        attn_bias: [B*H, N, M] optional additive attention bias (float)
+        """
+        # When both masks are supplied, PyTorch requires matching dtypes.
+        # Convert bool key_padding_mask to float so it matches the float attn_bias.
+        if (
+            context_mask is not None
+            and attn_bias is not None
+            and context_mask.dtype == torch.bool
+        ):
+            context_mask = torch.zeros_like(
+                context_mask, dtype=attn_bias.dtype
+            ).masked_fill_(context_mask, float("-inf"))
+
+        x = x + self.drop_path(
+            self.attn(
+                self.norm1(x),
+                context,
+                context,
+                key_padding_mask=context_mask,
+                attn_mask=attn_bias,
+            )[0]
+        )
+
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
 
@@ -286,13 +355,28 @@ class LaneFusionEncoder(nn.Module):
     def __init__(
         self,
         lane_len,
+        route_pool_level,
+        max_route_steps,
+        route_aux_loss,
         drop_path_rate=0.3,
         hidden_dim=192,
         depth=3,
         tokens_mlp_dim=64,
         channels_mlp_dim=128,
+        use_spatial_attn_bias=False,
+        route_fusion="r2m",
     ):
         super().__init__()
+
+        self.route_pool_level = route_pool_level
+        self.max_route_steps = max_route_steps
+        self.route_aux_loss = route_aux_loss
+        self.route_fusion = route_fusion
+
+        if self.route_fusion not in ["m2r", "r2m"]:
+            raise ValueError(
+                f"Unsupported route_fusion='{self.route_fusion}'. Use 'm2r' or 'r2m'."
+            )
 
         self._lane_len = lane_len
         self._channel = channels_mlp_dim
@@ -300,7 +384,13 @@ class LaneFusionEncoder(nn.Module):
         self.speed_limit_emb = nn.Linear(1, channels_mlp_dim)
         self.unknown_speed_emb = nn.Embedding(1, channels_mlp_dim)
         self.traffic_emb = nn.Linear(4, channels_mlp_dim)
-        self.is_route_emb = nn.Embedding(2, channels_mlp_dim)
+        self.is_route_emb = (
+            nn.Embedding(2, channels_mlp_dim)
+            if self.route_pool_level == "none"
+            else None
+        )
+        if self.route_pool_level in ["goal", "points"]:
+            self.goal_emb = nn.Linear(2, channels_mlp_dim)
 
         self.channel_pre_project = Mlp(
             in_features=8,
@@ -333,7 +423,41 @@ class LaneFusionEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x, speed_limit, has_speed_limit, lanes_is_route):
+        if self.route_pool_level in ["step", "route"]:
+            if self.route_fusion == "m2r":
+                self.route_encoder = VocabularyRouteEncoder(
+                    hidden_dim=hidden_dim, max_route_steps=max_route_steps
+                )
+                self.route_fusion_encoder = RouteFusionEncoder(
+                    hidden_dim=hidden_dim, use_spatial_attn_bias=use_spatial_attn_bias
+                )
+            else:
+                # Keep route conditioning in lane channel space so it can be added to x directly.
+                self.route_encoder = VocabularyRouteEncoder(
+                    hidden_dim=channels_mlp_dim, max_route_steps=max_route_steps
+                )
+                self.route_conditioner = RouteToLaneConditioner(
+                    hidden_dim=channels_mlp_dim,
+                    depth=depth,
+                    drop_path_rate=drop_path_rate,
+                    use_spatial_attn_bias=use_spatial_attn_bias,
+                )
+
+        if self.route_aux_loss:
+            self.route_prediction_head = nn.Sequential(
+                nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, 1)
+            )
+
+    def forward(
+        self,
+        x,
+        speed_limit,
+        has_speed_limit,
+        lanes_is_route,
+        route_description,
+        route_maneuver_positions,
+        ego_anchor,
+    ):
         """
         x: B, P, V, D (x, y, x'-x, y'-y, x_left-x, y_left-y, x_right-x, y_right-y, traffic(4))
         speed_limit: B, P, 1
@@ -398,19 +522,130 @@ class LaneFusionEncoder(nn.Module):
             traffic
         )  # Traffic light embedding for valid data
 
-        # Process route information directly for valid positions
-        lanes_is_route = lanes_is_route[valid_indices].squeeze(-1)
-        route_embedding = self.is_route_emb(lanes_is_route)
-
         x = (
-            x + speed_limit_embedding + traffic_light_embedding + route_embedding
+            x + speed_limit_embedding + traffic_light_embedding
         )  # [B * P, channels_mlp_dim]
+
+        # Process route information directly for valid positions
+        if self.route_pool_level == "none":
+            lanes_is_route = lanes_is_route[valid_indices].squeeze(-1)
+            if self.is_route_emb is not None:
+                route_embedding = self.is_route_emb(lanes_is_route)
+                x = x + route_embedding  # [B * P, channels_mlp_dim]
+
+        if self.route_pool_level == "goal":
+            goals = torch.zeros((B, 2), device=x.device)
+            for i in range(B):
+                last_maneuver_pos = route_maneuver_positions[
+                    i, route_maneuver_positions[i].nonzero(as_tuple=True)[0][-1]
+                ]
+                goals[i] = last_maneuver_pos
+            goals = goals.repeat_interleave(P, dim=0)[valid_indices]  # [B * P, 2]
+            goal_embedding = self.goal_emb(goals)
+            x = x + goal_embedding  # [B * P, channels_mlp_dim]
+
+        if self.route_pool_level == "points":
+            points = route_maneuver_positions[:, : self.max_route_steps]
+            points_embedding = self.goal_emb(
+                points
+            )  # [B, max_route_steps, channels_mlp_dim]
+
+            # Masked mean pooling over valid route steps only.
+            valid_step_mask = (points.abs().sum(dim=-1) > 0).unsqueeze(-1)
+            valid_step_mask = valid_step_mask.to(dtype=points_embedding.dtype)
+            valid_step_count = valid_step_mask.sum(dim=1).clamp_min(1.0)
+            points_embedding = (points_embedding * valid_step_mask).sum(
+                dim=1
+            ) / valid_step_count  # [B, channels_mlp_dim]
+
+            points_embedding = points_embedding.repeat_interleave(P, dim=0)[
+                valid_indices
+            ]  # [B * P, 2]
+            x = x + points_embedding  # [B * P, channels_mlp_dim]
+
+        # Condition lane embeddings with route->lane cross-attention in channel space.
+        if self.route_pool_level in ["step", "route"] and self.route_fusion == "r2m":
+            encoder_output = self.route_encoder(
+                route_description,
+                route_maneuver_positions,
+                pool_level=self.route_pool_level,
+            )
+            route_encoding = (
+                encoder_output.x
+            )  # [B, channels_mlp_dim] or [B, n_route_steps, channels_mlp_dim]
+            route_encoding_mask = (
+                encoder_output.steps_mask
+            )  # [B, channels_mlp_dim] or None
+
+            if route_encoding.dim() == 2:
+                route_encoding = route_encoding.unsqueeze(1)
+
+            lane_tokens = torch.zeros(
+                (B, P, self._channel), device=x.device, dtype=x.dtype
+            )
+            valid_lane_mask = ~mask_p
+            lane_tokens[valid_lane_mask] = x
+
+            lane_pos_xy = pos[
+                :, :, :2
+            ]  # [B, P, 2] already in normalized ego-local frame
+            step_pos_xy = route_maneuver_positions[
+                :, 1 : self.max_route_steps + 1
+            ]  # [B, n_route_steps, 2], skip depart
+
+            lane_route_delta = self.route_conditioner(
+                route=route_encoding,
+                lane=lane_tokens,
+                lane_mask=mask_p,
+                route_mask=route_encoding_mask,
+                lane_pos=lane_pos_xy,
+                step_pos=step_pos_xy,
+            )
+
+            x = x + lane_route_delta[valid_lane_mask]
+
         x = self.emb_project(self.norm(x))  # [B * P, hidden_dim]
 
         x_result = torch.zeros((B * P, x.shape[-1]), device=x.device)
         x_result[valid_indices] = x  # Fill in valid parts
+        x_result = x_result.view(B, P, -1)
 
-        return x_result.view(B, P, -1), mask_p.reshape(B, -1), pos.view(B, P, -1)
+        if self.route_pool_level in ["step", "route"] and self.route_fusion == "m2r":
+            encoder_output = self.route_encoder(
+                route_description,
+                route_maneuver_positions,
+                pool_level=self.route_pool_level,
+            )
+            route_encoding = (
+                encoder_output.x
+            )  # [B, hidden_dim] or [B, n_route_steps, hidden_dim]
+            route_encoding_mask = encoder_output.steps_mask  # [B, n_route_steps]
+
+            if route_encoding.dim() == 2:
+                route_encoding = route_encoding.unsqueeze(1)
+
+            lane_pos_xy = pos[
+                :, :, :2
+            ]  # [B, P, 2] already in normalized ego-local frame
+            step_pos_xy = route_maneuver_positions[
+                :, 1 : self.max_route_steps + 1
+            ]  # [B, S, 2] skip depart, already normalized
+
+            x_result = self.route_fusion_encoder(
+                lane=x_result,
+                route=route_encoding,
+                mask=route_encoding_mask,
+                lane_pos=lane_pos_xy,
+                step_pos=step_pos_xy,
+            )
+
+        # Auxiliary prediction head: predict which lanes are on the route
+        route_logits = None
+        if self.route_aux_loss:
+            route_logits = self.route_prediction_head(x_result).squeeze(-1)  # [B, P]
+            route_logits = torch.clamp(route_logits, -20, 20)
+
+        return x_result, mask_p.reshape(B, -1), pos.view(B, P, -1), route_logits
 
 
 class FusionEncoder(nn.Module):
@@ -437,3 +672,161 @@ class FusionEncoder(nn.Module):
             x = b(x, mask)
 
         return self.norm(x)
+
+
+class SpatialBiasComputer(nn.Module):
+    """Computes an additive attention bias from pairwise lane↔step relative positions."""
+
+    def __init__(self, num_heads=6, hidden_dim=32):
+        super().__init__()
+        self.num_heads = num_heads
+        self.proj = nn.Sequential(
+            nn.Linear(2, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, num_heads),
+        )
+
+    def forward(self, lane_pos, step_pos):
+        """
+        Args:
+            lane_pos: [B, P, 2]  (lane xy positions, normalized)
+            step_pos: [B, S, 2]  (route step xy positions, normalized)
+        Returns:
+            attn_bias: [B*H, P, S]  additive bias for nn.MultiheadAttention(attn_mask=...)
+        """
+        # [B, P, S, 2]
+        rel = lane_pos[:, :, None, :] - step_pos[:, None, :, :]
+        # [B, P, S, num_heads]
+        bias = self.proj(rel)
+        # -> [B, num_heads, P, S] -> [B*H, P, S]
+        B, P, S, H = bias.shape
+        bias = bias.permute(0, 3, 1, 2).reshape(B * H, P, S)
+        return bias
+
+
+class RouteFusionEncoder(nn.Module):
+    def __init__(
+        self,
+        hidden_dim=192,
+        num_heads=6,
+        drop_path_rate=0.3,
+        depth=3,
+        device="cuda",
+        use_spatial_attn_bias=False,
+    ):
+        super().__init__()
+
+        dpr = drop_path_rate
+
+        self.route_to_lane_attn = nn.ModuleList(
+            [
+                CrossAttentionBlock(
+                    dim=hidden_dim, heads=num_heads, dropout=drop_path_rate
+                )
+                for _ in range(depth)
+            ]
+        )
+
+        self.use_spatial_attn_bias = use_spatial_attn_bias
+        if use_spatial_attn_bias:
+            self.spatial_bias = SpatialBiasComputer(num_heads=num_heads)
+        self.norm = nn.LayerNorm(hidden_dim)
+
+    def forward(self, lane, route, mask=None, lane_pos=None, step_pos=None):
+        """
+        Forward pass for the encoder module.
+
+        Args:
+            lane: Tensor of shape (batch_size, num_lanes, feature_dim) representing lane features.
+            route: Tensor of shape (batch_size, 1, feature_dim) or (batch_size, num_steps, feature_dim) representing route features.
+            mask: Tensor of shape (batch_size, num_steps) representing padding mask for route attention,
+                  where True indicates positions to be masked out.
+            lane_pos: Tensor of shape (batch_size, num_lanes, 2) — lane xy positions (normalized).
+            step_pos: Tensor of shape (batch_size, num_steps, 2) — route step xy positions (normalized).
+
+        Returns:
+            Tensor of shape (batch_size, num_lanes, feature_dim) representing normalized lane features
+            after cross-attention with route features.
+        """
+        attn_bias = None
+        if self.use_spatial_attn_bias and lane_pos is not None and step_pos is not None:
+            attn_bias = self.spatial_bias(lane_pos, step_pos)  # [B*H, P, S]
+
+        for attn_block in self.route_to_lane_attn:
+            lane = attn_block(lane, route, mask, attn_bias=attn_bias)
+
+        return self.norm(lane)
+
+
+class RouteToLaneConditioner(nn.Module):
+    """Route queries attend to lane keys/values, then pool route context back to a lane delta."""
+
+    def __init__(
+        self,
+        hidden_dim=128,
+        num_heads=6,
+        drop_path_rate=0.3,
+        depth=3,
+        use_spatial_attn_bias=False,
+    ):
+        super().__init__()
+
+        # Ensure MultiheadAttention is always valid for the chosen channel width.
+        if hidden_dim % num_heads != 0:
+            for candidate in range(min(num_heads, hidden_dim), 0, -1):
+                if hidden_dim % candidate == 0:
+                    num_heads = candidate
+                    break
+
+        self.route_to_lane_attn = nn.ModuleList(
+            [
+                CrossAttentionBlock(
+                    dim=hidden_dim, heads=num_heads, dropout=drop_path_rate
+                )
+                for _ in range(depth)
+            ]
+        )
+
+        self.use_spatial_attn_bias = use_spatial_attn_bias
+        if use_spatial_attn_bias:
+            self.spatial_bias = SpatialBiasComputer(num_heads=num_heads)
+
+        self.route_out = nn.Sequential(
+            nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, hidden_dim)
+        )
+        # Start close to zero contribution and let optimization learn influence.
+        self.route_gate = nn.Parameter(torch.tensor(0.0))
+
+    def forward(
+        self, route, lane, lane_mask=None, route_mask=None, lane_pos=None, step_pos=None
+    ):
+        """
+        route: [B, S, C] queries
+        lane: [B, P, C] keys/values
+        lane_mask: [B, P], True means masked lane
+        route_mask: [B, S], True means masked route step
+        returns: [B, P, C] lane additive delta
+        """
+        attn_bias = None
+        if (
+            self.use_spatial_attn_bias
+            and lane_pos is not None
+            and step_pos is not None
+            and route.shape[1] == step_pos.shape[1]
+        ):
+            # SpatialBiasComputer returns [B*H, P, S], transpose to [B*H, S, P] for route-query attention.
+            attn_bias = self.spatial_bias(lane_pos, step_pos).transpose(1, 2)
+
+        for attn_block in self.route_to_lane_attn:
+            route = attn_block(route, lane, context_mask=lane_mask, attn_bias=attn_bias)
+
+        if route_mask is not None:
+            valid = (~route_mask).unsqueeze(-1).to(route.dtype)
+            denom = valid.sum(dim=1).clamp_min(1.0)
+            route_global = (route * valid).sum(dim=1) / denom
+        else:
+            route_global = route.mean(dim=1)
+
+        route_global = self.route_out(route_global)
+        gate = torch.sigmoid(self.route_gate)
+        return gate * route_global.unsqueeze(1).expand_as(lane)
