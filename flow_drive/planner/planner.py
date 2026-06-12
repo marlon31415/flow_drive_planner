@@ -260,6 +260,41 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
 
         inputs = self.planner_input_to_model_inputs(current_input)
 
+        attn_handle = None
+        route_logits_handle = None
+
+        if self._render:
+            attn_store: Dict[str, torch.Tensor] = {}
+
+            def _store_route_lane_attention(module, module_inputs, module_outputs):
+                if isinstance(module_outputs, tuple) and len(module_outputs) > 1:
+                    attn = module_outputs[1]
+                    if isinstance(attn, torch.Tensor):
+                        attn_store["route_lane_attn"] = attn.detach()
+
+            route_conditioner = getattr(
+                self._planner.encoder.lane_encoder, "route_conditioner", None
+            )
+            if (
+                route_conditioner is not None
+                and len(route_conditioner.route_to_lane_attn) > 0
+            ):
+                attn_handle = route_conditioner.route_to_lane_attn[
+                    -1
+                ].attn.register_forward_hook(_store_route_lane_attention)
+
+            def _store_route_lane_logits(module, module_inputs, module_outputs):
+                if isinstance(module_outputs, torch.Tensor):
+                    attn_store["route_lane_logits"] = module_outputs.detach()
+
+            route_prediction_head = getattr(
+                self._planner.encoder.lane_encoder, "route_prediction_head", None
+            )
+            if route_prediction_head is not None:
+                route_logits_handle = route_prediction_head.register_forward_hook(
+                    _store_route_lane_logits
+                )
+
         if self._post_process == 1:
             current_lane = self._trajectory_scorer.prepare_scoring(current_input)
             speed_limit = current_lane.speed_limit_mps
@@ -285,6 +320,11 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
                     self._step_interval,
                 )
             )
+
+        if attn_handle is not None:
+            attn_handle.remove()
+        if route_logits_handle is not None:
+            route_logits_handle.remove()
 
         if self._render:
             inputs_for_plotting = {
