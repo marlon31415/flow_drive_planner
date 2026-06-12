@@ -297,37 +297,39 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
                 route_logits_handle = route_prediction_head.register_forward_hook(
                     _store_route_lane_logits
                 )
-
-        if self._post_process == 1:
-            current_lane = self._trajectory_scorer.prepare_scoring(current_input)
-            speed_limit = current_lane.speed_limit_mps
-            if speed_limit is None:
-                speed_limit = 15.0
-            speed_limit = torch.tensor(
-                [speed_limit], device=self._device
-            )  # [B] normalized speed limit
-            outputs = self._planner.plan_multiple_trajectories_with_moderated_offset(
-                inputs, speed_limit, self._speed_offsets, self._lateral_offset
-            )  # (S, B, T, [x, y, heading]), B = 1
-            scores, ego_states_list = self._trajectory_scorer.score_plans(outputs)
-            index = np.argmax(scores)
-            ego_states = ego_states_list[index]
-            trajectory = InterpolatedTrajectory(trajectory=ego_states)
-        else:
-            outputs = self._planner(inputs)
-            trajectory = InterpolatedTrajectory(
-                trajectory=outputs_to_trajectory(
-                    outputs,
-                    current_input.history.ego_states,
-                    self._future_horizon,
-                    self._step_interval,
+        try:
+            if self._post_process == 1:
+                current_lane = self._trajectory_scorer.prepare_scoring(current_input)
+                speed_limit = current_lane.speed_limit_mps
+                if speed_limit is None:
+                    speed_limit = 15.0
+                speed_limit = torch.tensor(
+                    [speed_limit], device=self._device
+                )  # [B] normalized speed limit
+                outputs = (
+                    self._planner.plan_multiple_trajectories_with_moderated_offset(
+                        inputs, speed_limit, self._speed_offsets, self._lateral_offset
+                    )
+                )  # (S, B, T, [x, y, heading]), B = 1
+                scores, ego_states_list = self._trajectory_scorer.score_plans(outputs)
+                index = np.argmax(scores)
+                ego_states = ego_states_list[index]
+                trajectory = InterpolatedTrajectory(trajectory=ego_states)
+            else:
+                outputs = self._planner(inputs)
+                trajectory = InterpolatedTrajectory(
+                    trajectory=outputs_to_trajectory(
+                        outputs,
+                        current_input.history.ego_states,
+                        self._future_horizon,
+                        self._step_interval,
+                    )
                 )
-            )
-
-        if attn_handle is not None:
-            attn_handle.remove()
-        if route_logits_handle is not None:
-            route_logits_handle.remove()
+        finally:
+            if attn_handle is not None:
+                attn_handle.remove()
+            if route_logits_handle is not None:
+                route_logits_handle.remove()
 
         if self._render:
             if "route_lane_attn" in attn_store:
