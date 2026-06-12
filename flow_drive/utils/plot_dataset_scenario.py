@@ -27,6 +27,26 @@ EGO_REAR_CENTER_OFFSET = (
     1.461  # meters, distance from rear axle to center of the vehicle
 )
 
+# Sparse attention rendering parameters.
+ATTN_TOP_K_LANES_PER_STEP = 3
+ATTN_ALPHA_THRESHOLD = 0.38
+ATTN_ALPHA_GAMMA = 1.8
+ATTN_LINEWIDTH = 2.5
+ATTN_EPS = 1e-6
+ROUTE_TEXT_MAX_STEPS_DEFAULT = 9
+PRED_ROUTE_THRESHOLD = 0.5
+
+
+def _count_route_steps(route_description):
+    """Count route description steps excluding the first 'depart' step."""
+    if isinstance(route_description, list):
+        route_description = route_description[0] if route_description else ""
+    if not isinstance(route_description, str):
+        return 0
+
+    steps = [s.strip() for s in route_description.split(";") if s.strip()]
+    return max(len(steps) - 1, 0)
+
 
 def _plot_agent_rectangle(
     ax,
@@ -177,7 +197,182 @@ def _plot_lanes_data(ax, lanes_data, color, alpha=0.2):
             )
 
 
-def plot_scenario(data, output_filename="scenario.png"):
+def _plot_predicted_route_lanes(
+    ax, lanes_data, route_lane_logits, threshold=PRED_ROUTE_THRESHOLD
+):
+    """Overlay lanes predicted by the route head using original route-lane styling."""
+    if lanes_data is None or route_lane_logits is None:
+        return
+    if lanes_data.shape[0] == 0:
+        return
+
+    logits = np.asarray(route_lane_logits).reshape(-1)
+    num_lanes = min(lanes_data.shape[0], logits.shape[0])
+    if num_lanes == 0:
+        return
+
+    values = logits[:num_lanes]
+    # Check if values are already in [0,1] range; if not, apply sigmoid to convert logits to probabilities
+    if np.any(values < 0.0) or np.any(values > 1.0):
+        values = 1.0 / (1.0 + np.exp(-np.clip(values, -50.0, 50.0)))
+
+    predicted_mask = values >= threshold
+    if not np.any(predicted_mask):
+        return
+
+    predicted_lanes = lanes_data[:num_lanes][predicted_mask]
+    _plot_lanes_data(ax, predicted_lanes, COLOR_ROUTE_LANES, alpha=0.7)
+
+
+def _plot_lane_attention_borders(ax, lanes_data, attention, max_steps=None):
+    """Overlay lane borders with sparse route-step attention on lanes."""
+    if lanes_data is None or attention is None:
+        return
+    if lanes_data.shape[0] == 0 or attention.ndim != 2:
+        return
+
+    attention_matrix = attention
+
+    num_steps = attention_matrix.shape[0]
+    if max_steps is not None:
+        num_steps = min(num_steps, max_steps)
+    num_lanes = min(lanes_data.shape[0], attention_matrix.shape[1])
+    if num_steps == 0 or num_lanes == 0:
+        return
+
+    attention_slice = np.clip(attention_matrix[:num_steps, :num_lanes], 0.0, None)
+    step_colors = plt.cm.Set1(np.linspace(0, 1, 10))
+
+    valid_lane_mask = np.ones(num_lanes, dtype=bool)
+    lane_border_cache = [None] * num_lanes
+    for lane_idx in range(num_lanes):
+        lane_points = lanes_data[lane_idx]
+        if np.all(lane_points[0, :2] == 0):
+            valid_lane_mask[lane_idx] = False
+            continue
+
+        center_x = lane_points[:, 0]
+        center_y = lane_points[:, 1]
+        left_x = lane_points[:, 4] + center_x
+        left_y = lane_points[:, 5] + center_y
+        right_x = lane_points[:, 6] + center_x
+        right_y = lane_points[:, 7] + center_y
+        lane_border_cache[lane_idx] = (left_x, left_y, right_x, right_y)
+
+    valid_lane_indices = np.where(valid_lane_mask)[0]
+    if valid_lane_indices.size == 0:
+        return
+
+    effective_k = min(ATTN_TOP_K_LANES_PER_STEP, valid_lane_indices.size)
+    if effective_k <= 0:
+        return
+
+    for step_idx in range(num_steps - 1, -1, -1):
+        step_values = attention_slice[step_idx].copy()
+        step_values[~valid_lane_mask] = 0.0
+
+        step_max = float(np.max(step_values))
+        if step_max <= ATTN_EPS:
+            continue
+
+        # Per-step normalization over lanes keeps each maneuver interpretable.
+        step_norm = step_values / step_max
+        valid_scores = step_norm[valid_lane_indices]
+
+        if effective_k < valid_scores.size:
+            top_local = np.argpartition(valid_scores, -effective_k)[-effective_k:]
+            top_local = top_local[np.argsort(valid_scores[top_local])[::-1]]
+        else:
+            top_local = np.argsort(valid_scores)[::-1]
+
+        top_lane_indices = valid_lane_indices[top_local]
+        step_color = step_colors[step_idx % len(step_colors)]
+        for lane_idx in top_lane_indices:
+            weight = float(np.clip(step_norm[lane_idx], 0.0, 1.0))
+            if weight < ATTN_ALPHA_THRESHOLD:
+                continue
+
+            lane_borders = lane_border_cache[lane_idx]
+            if lane_borders is None:
+                continue
+
+            alpha = float(weight**ATTN_ALPHA_GAMMA)
+            left_x, left_y, right_x, right_y = lane_borders
+
+            ax.plot(
+                left_x,
+                left_y,
+                linestyle="-",
+                color=step_color,
+                linewidth=ATTN_LINEWIDTH,
+                zorder=3,
+                alpha=alpha,
+            )
+            ax.plot(
+                right_x,
+                right_y,
+                linestyle="-",
+                color=step_color,
+                linewidth=ATTN_LINEWIDTH,
+                zorder=3,
+                alpha=alpha,
+            )
+
+
+def _plot_route_description(
+    ax, route_description, max_steps=ROUTE_TEXT_MAX_STEPS_DEFAULT
+):
+    """Overlay colored route maneuver description text in the upper-left corner."""
+    if route_description is None:
+        return
+
+    # Ensure route_description is a string
+    if isinstance(route_description, list):
+        route_description = route_description[0] if route_description else ""
+
+    if not isinstance(route_description, str) or len(route_description) == 0:
+        return
+
+    #  Parse description into steps (expected delimiter is ';')
+    steps = [s.strip() for s in route_description.split(";") if s.strip()]
+
+    if len(steps) == 0:
+        return
+
+    step_colors = plt.cm.Set1(np.linspace(0, 1, 10))
+
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+    x_pos = xlim[0] + (xlim[1] - xlim[0]) * 0.02
+    y_start = ylim[1] - (ylim[1] - ylim[0]) * 0.08
+    y_step = (ylim[1] - ylim[0]) * 0.06
+
+    steps_to_plot = steps[1:]
+    if max_steps is not None:
+        steps_to_plot = steps_to_plot[:max_steps]
+
+    for idx, step in enumerate(steps_to_plot):
+        y_pos = y_start - idx * y_step
+        step_color = step_colors[idx % len(step_colors)]
+        ax.text(
+            x_pos,
+            y_pos,
+            step,
+            fontsize=8,
+            color=step_color,
+            weight="bold",
+            bbox=dict(
+                boxstyle="round,pad=0.3",
+                facecolor="white",
+                alpha=0.7,
+                edgecolor=step_color,
+                linewidth=1.5,
+            ),
+            zorder=25,
+        )
+
+
+def plot_scenario(data, output_filename="scenario.png", render_variant="attention"):
     """
     Plots a driving scenario from the given data dictionary.
 
@@ -194,6 +389,35 @@ def plot_scenario(data, output_filename="scenario.png"):
     # # 2. Plot route lanes
     if "route_lanes" in data:
         _plot_lanes_data(ax, data["route_lanes"], COLOR_ROUTE_LANES, alpha=0.7)
+
+    route_step_count = _count_route_steps(data.get("route_description"))
+
+    # 2.5 Overlay lane attention on lane borders using route-step colors.
+    effective_displayed_step_count = ROUTE_TEXT_MAX_STEPS_DEFAULT
+    if render_variant == "attention" and "lanes" in data:
+        attention = data.get("route_lane_attn")
+        if attention is not None:
+            if (
+                attention.ndim == 2
+                and attention.shape[0] > 0
+                and attention.shape[1] > 0
+            ):
+                effective_displayed_step_count = int(attention.shape[0])
+
+            if route_step_count > 0:
+                effective_displayed_step_count = min(
+                    effective_displayed_step_count, route_step_count
+                )
+
+            _plot_lane_attention_borders(
+                ax,
+                data["lanes"],
+                attention,
+                max_steps=effective_displayed_step_count,
+            )
+
+    if render_variant == "predicted_route" and "lanes" in data:
+        _plot_predicted_route_lanes(ax, data["lanes"], data.get("route_lane_logits"))
 
     # 3. Plot static objects
     # static_objects: (N, 10), [x, y, cos, sin, width, length, type(4)]
@@ -422,6 +646,11 @@ def plot_scenario(data, output_filename="scenario.png"):
     else:
         # Fallback if ego state is not available for centering the view
         ax.autoscale_view()
+
+    if "route_description" in data:
+        _plot_route_description(
+            ax, data["route_description"], max_steps=effective_displayed_step_count
+        )
 
     plt.xlabel("X (meters)")
     plt.ylabel("Y (meters)")
