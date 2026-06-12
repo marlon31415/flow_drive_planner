@@ -426,10 +426,11 @@ class LaneFusionEncoder(nn.Module):
         if self.route_pool_level in ["step", "route"]:
             if self.route_fusion == "m2r":
                 self.route_encoder = VocabularyRouteEncoder(
-                    hidden_dim=hidden_dim, max_route_steps=max_route_steps
+                    hidden_dim=channels_mlp_dim, max_route_steps=max_route_steps
                 )
                 self.route_fusion_encoder = RouteFusionEncoder(
-                    hidden_dim=hidden_dim, use_spatial_attn_bias=use_spatial_attn_bias
+                    hidden_dim=channels_mlp_dim,
+                    use_spatial_attn_bias=use_spatial_attn_bias,
                 )
             else:
                 # Keep route conditioning in lane channel space so it can be added to x directly.
@@ -604,12 +605,6 @@ class LaneFusionEncoder(nn.Module):
 
             x = x + lane_route_delta[valid_lane_mask]
 
-        x = self.emb_project(self.norm(x))  # [B * P, hidden_dim]
-
-        x_result = torch.zeros((B * P, x.shape[-1]), device=x.device)
-        x_result[valid_indices] = x  # Fill in valid parts
-        x_result = x_result.view(B, P, -1)
-
         if self.route_pool_level in ["step", "route"] and self.route_fusion == "m2r":
             encoder_output = self.route_encoder(
                 route_description,
@@ -618,11 +613,17 @@ class LaneFusionEncoder(nn.Module):
             )
             route_encoding = (
                 encoder_output.x
-            )  # [B, hidden_dim] or [B, n_route_steps, hidden_dim]
+            )  # [B, channels_mlp_dim] or [B, n_route_steps, channels_mlp_dim]
             route_encoding_mask = encoder_output.steps_mask  # [B, n_route_steps]
 
             if route_encoding.dim() == 2:
                 route_encoding = route_encoding.unsqueeze(1)
+
+            lane_tokens = torch.zeros(
+                (B, P, self._channel), device=x.device, dtype=x.dtype
+            )
+            valid_lane_mask = ~mask_p
+            lane_tokens[valid_lane_mask] = x
 
             lane_pos_xy = pos[
                 :, :, :2
@@ -631,13 +632,21 @@ class LaneFusionEncoder(nn.Module):
                 :, 1 : self.max_route_steps + 1
             ]  # [B, S, 2] skip depart, already normalized
 
-            x_result = self.route_fusion_encoder(
-                lane=x_result,
+            lane_tokens = self.route_fusion_encoder(
+                lane=lane_tokens,
                 route=route_encoding,
                 mask=route_encoding_mask,
                 lane_pos=lane_pos_xy,
                 step_pos=step_pos_xy,
             )
+
+            x = lane_tokens[valid_lane_mask]
+
+        x = self.emb_project(self.norm(x))  # [B * P, hidden_dim]
+
+        x_result = torch.zeros((B * P, x.shape[-1]), device=x.device)
+        x_result[valid_indices] = x  # Fill in valid parts
+        x_result = x_result.view(B, P, -1)
 
         # Auxiliary prediction head: predict which lanes are on the route
         route_logits = None
@@ -716,7 +725,12 @@ class RouteFusionEncoder(nn.Module):
     ):
         super().__init__()
 
-        dpr = drop_path_rate
+        # Ensure MultiheadAttention is valid for the chosen feature width.
+        if hidden_dim % num_heads != 0:
+            for candidate in range(min(num_heads, hidden_dim), 0, -1):
+                if hidden_dim % candidate == 0:
+                    num_heads = candidate
+                    break
 
         self.route_to_lane_attn = nn.ModuleList(
             [
