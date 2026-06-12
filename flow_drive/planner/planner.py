@@ -145,6 +145,7 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
 
         self._render = render
         self._video_dir = video_dir
+        self._render_variants = ["original", "attention", "predicted_route"]
 
         self._interplan = interplan
 
@@ -260,45 +261,113 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
 
         inputs = self.planner_input_to_model_inputs(current_input)
 
-        if self._post_process == 1:
-            current_lane = self._trajectory_scorer.prepare_scoring(current_input)
-            speed_limit = current_lane.speed_limit_mps
-            if speed_limit is None:
-                speed_limit = 15.0
-            speed_limit = torch.tensor(
-                [speed_limit], device=self._device
-            )  # [B] normalized speed limit
-            outputs = self._planner.plan_multiple_trajectories_with_moderated_offset(
-                inputs, speed_limit, self._speed_offsets, self._lateral_offset
-            )  # (S, B, T, [x, y, heading]), B = 1
-            scores, ego_states_list = self._trajectory_scorer.score_plans(outputs)
-            index = np.argmax(scores)
-            ego_states = ego_states_list[index]
-            trajectory = InterpolatedTrajectory(trajectory=ego_states)
-        else:
-            outputs = self._planner(inputs)
-            trajectory = InterpolatedTrajectory(
-                trajectory=outputs_to_trajectory(
-                    outputs,
-                    current_input.history.ego_states,
-                    self._future_horizon,
-                    self._step_interval,
-                )
-            )
+        route_lane_attn = None
+        route_lane_logits = None
+        attn_handle = None
+        route_logits_handle = None
 
         if self._render:
+            attn_store: Dict[str, torch.Tensor] = {}
+
+            def _store_route_lane_attention(module, module_inputs, module_outputs):
+                if isinstance(module_outputs, tuple) and len(module_outputs) > 1:
+                    attn = module_outputs[1]
+                    if isinstance(attn, torch.Tensor):
+                        attn_store["route_lane_attn"] = attn.detach()
+
+            route_conditioner = getattr(
+                self._planner.encoder.lane_encoder, "route_conditioner", None
+            )
+            if (
+                route_conditioner is not None
+                and len(route_conditioner.route_to_lane_attn) > 0
+            ):
+                attn_handle = route_conditioner.route_to_lane_attn[
+                    -1
+                ].attn.register_forward_hook(_store_route_lane_attention)
+
+            def _store_route_lane_logits(module, module_inputs, module_outputs):
+                if isinstance(module_outputs, torch.Tensor):
+                    attn_store["route_lane_logits"] = module_outputs.detach()
+
+            route_prediction_head = getattr(
+                self._planner.encoder.lane_encoder, "route_prediction_head", None
+            )
+            if route_prediction_head is not None:
+                route_logits_handle = route_prediction_head.register_forward_hook(
+                    _store_route_lane_logits
+                )
+        try:
+            if self._post_process == 1:
+                current_lane = self._trajectory_scorer.prepare_scoring(current_input)
+                speed_limit = current_lane.speed_limit_mps
+                if speed_limit is None:
+                    speed_limit = 15.0
+                speed_limit = torch.tensor(
+                    [speed_limit], device=self._device
+                )  # [B] normalized speed limit
+                outputs = (
+                    self._planner.plan_multiple_trajectories_with_moderated_offset(
+                        inputs, speed_limit, self._speed_offsets, self._lateral_offset
+                    )
+                )  # (S, B, T, [x, y, heading]), B = 1
+                scores, ego_states_list = self._trajectory_scorer.score_plans(outputs)
+                index = np.argmax(scores)
+                ego_states = ego_states_list[index]
+                trajectory = InterpolatedTrajectory(trajectory=ego_states)
+            else:
+                outputs = self._planner(inputs)
+                trajectory = InterpolatedTrajectory(
+                    trajectory=outputs_to_trajectory(
+                        outputs,
+                        current_input.history.ego_states,
+                        self._future_horizon,
+                        self._step_interval,
+                    )
+                )
+        finally:
+            if attn_handle is not None:
+                attn_handle.remove()
+            if route_logits_handle is not None:
+                route_logits_handle.remove()
+
+        if self._render:
+            if "route_lane_attn" in attn_store:
+                route_lane_attn = attn_store["route_lane_attn"]
+            if "route_lane_logits" in attn_store:
+                route_lane_logits = attn_store["route_lane_logits"]
             inputs_for_plotting = {
                 k: v[0].cpu().numpy() if isinstance(v, torch.Tensor) else v
                 for k, v in inputs.items()
             }
+            if (
+                route_lane_attn is not None
+                and route_lane_attn.ndim == 3
+                and route_lane_attn.shape[0] > 0
+            ):
+                inputs_for_plotting["route_lane_attn"] = (
+                    route_lane_attn[0].cpu().numpy()
+                )
+            if (
+                route_lane_logits is not None
+                and route_lane_logits.ndim >= 2
+                and route_lane_logits.shape[0] > 0
+            ):
+                inputs_for_plotting["route_lane_logits"] = (
+                    route_lane_logits[0].squeeze(-1).cpu().numpy()
+                )
             if self._post_process > 0:
                 inputs_for_plotting["ego_plan"] = outputs[index, 0].cpu().numpy()
             else:
                 inputs_for_plotting["ego_plan"] = outputs[0].cpu().numpy()
-            fig_dir = os.path.join(self._video_dir, self._planner_id)
-            os.makedirs(fig_dir, exist_ok=True)
-            fig_path = os.path.join(fig_dir, f"{self._iteration}.png")
-            plot_scenario(inputs_for_plotting, fig_path)
+            base_fig_dir = os.path.join(self._video_dir, self._planner_id)
+            for render_variant in self._render_variants:
+                fig_dir = os.path.join(base_fig_dir, render_variant)
+                os.makedirs(fig_dir, exist_ok=True)
+                fig_path = os.path.join(fig_dir, f"{self._iteration}.png")
+                plot_scenario(
+                    inputs_for_plotting, fig_path, render_variant=render_variant
+                )
 
         self._iteration += 1
         return trajectory
@@ -306,14 +375,24 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
     # make video when deleting the planner
     def __del__(self):
         if self._render:
-            img_paths = sorted(
-                glob.glob(os.path.join(self._video_dir, self._planner_id, "*.png")),
-                key=lambda x: int(os.path.basename(x).split(".")[0]),
-            )
-            if len(img_paths) > 0:
+
+            for render_variant in self._render_variants:
+                img_paths = sorted(
+                    glob.glob(
+                        os.path.join(
+                            self._video_dir, self._planner_id, render_variant, "*.png"
+                        )
+                    ),
+                    key=lambda x: int(os.path.basename(x).split(".")[0]),
+                )
+                if len(img_paths) == 0:
+                    continue
+
                 import imageio
 
-                video_path = os.path.join(self._video_dir, f"{self._planner_id}.mp4")
+                video_path = os.path.join(
+                    self._video_dir, f"{self._planner_id}_{render_variant}.mp4"
+                )
                 with imageio.get_writer(video_path, fps=10) as video_writer:
                     for img_path in img_paths:
                         image = imageio.v2.imread(img_path)
