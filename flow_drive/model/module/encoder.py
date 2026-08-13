@@ -36,6 +36,7 @@ class Encoder(nn.Module):
             depth=config.encoder_depth,
             use_spatial_attn_bias=config.use_spatial_attn_bias,
             route_fusion=getattr(config, "route_fusion", "r2m"),
+            route_fusion_binary=getattr(config, "route_fusion_binary", True),
         )
 
         self.fusion = FusionEncoder(
@@ -365,6 +366,7 @@ class LaneFusionEncoder(nn.Module):
         channels_mlp_dim=128,
         use_spatial_attn_bias=False,
         route_fusion="r2m",
+        route_fusion_binary=True,
     ):
         super().__init__()
 
@@ -372,6 +374,7 @@ class LaneFusionEncoder(nn.Module):
         self.max_route_steps = max_route_steps
         self.route_aux_loss = route_aux_loss
         self.route_fusion = route_fusion
+        self.route_fusion_binary = route_fusion_binary
 
         if self.route_fusion not in ["m2r", "r2m"]:
             raise ValueError(
@@ -384,11 +387,7 @@ class LaneFusionEncoder(nn.Module):
         self.speed_limit_emb = nn.Linear(1, channels_mlp_dim)
         self.unknown_speed_emb = nn.Embedding(1, channels_mlp_dim)
         self.traffic_emb = nn.Linear(4, channels_mlp_dim)
-        self.is_route_emb = (
-            nn.Embedding(2, channels_mlp_dim)
-            if self.route_pool_level == "none"
-            else None
-        )
+        self.is_route_emb = nn.Embedding(2, channels_mlp_dim)
         if self.route_pool_level in ["goal", "points"]:
             self.goal_emb = nn.Linear(2, channels_mlp_dim)
 
@@ -446,7 +445,7 @@ class LaneFusionEncoder(nn.Module):
 
         if self.route_aux_loss:
             self.route_prediction_head = nn.Sequential(
-                nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, 1)
+                nn.LayerNorm(channels_mlp_dim), nn.Linear(channels_mlp_dim, 1)
             )
 
     def forward(
@@ -523,16 +522,15 @@ class LaneFusionEncoder(nn.Module):
             traffic
         )  # Traffic light embedding for valid data
 
-        x = (
+        x_base = (
             x + speed_limit_embedding + traffic_light_embedding
         )  # [B * P, channels_mlp_dim]
 
         # Process route information directly for valid positions
         if self.route_pool_level == "none":
             lanes_is_route = lanes_is_route[valid_indices].squeeze(-1)
-            if self.is_route_emb is not None:
-                route_embedding = self.is_route_emb(lanes_is_route)
-                x = x + route_embedding  # [B * P, channels_mlp_dim]
+            route_embedding = self.is_route_emb(lanes_is_route)
+            x = x_base + route_embedding  # [B * P, channels_mlp_dim]
 
         if self.route_pool_level == "goal":
             goals = torch.zeros((B, 2), device=x.device)
@@ -543,7 +541,7 @@ class LaneFusionEncoder(nn.Module):
                 goals[i] = last_maneuver_pos
             goals = goals.repeat_interleave(P, dim=0)[valid_indices]  # [B * P, 2]
             goal_embedding = self.goal_emb(goals)
-            x = x + goal_embedding  # [B * P, channels_mlp_dim]
+            x = x_base + goal_embedding  # [B * P, channels_mlp_dim]
 
         if self.route_pool_level == "points":
             points = route_maneuver_positions[:, : self.max_route_steps]
@@ -562,7 +560,7 @@ class LaneFusionEncoder(nn.Module):
             points_embedding = points_embedding.repeat_interleave(P, dim=0)[
                 valid_indices
             ]  # [B * P, 2]
-            x = x + points_embedding  # [B * P, channels_mlp_dim]
+            x = x_base + points_embedding  # [B * P, channels_mlp_dim]
 
         # Condition lane embeddings with route->lane cross-attention in channel space.
         if self.route_pool_level in ["step", "route"] and self.route_fusion == "r2m":
@@ -582,10 +580,10 @@ class LaneFusionEncoder(nn.Module):
                 route_encoding = route_encoding.unsqueeze(1)
 
             lane_tokens = torch.zeros(
-                (B, P, self._channel), device=x.device, dtype=x.dtype
+                (B, P, self._channel), device=x_base.device, dtype=x_base.dtype
             )
             valid_lane_mask = ~mask_p
-            lane_tokens[valid_lane_mask] = x
+            lane_tokens[valid_lane_mask] = x_base
 
             lane_pos_xy = pos[
                 :, :, :2
@@ -603,7 +601,7 @@ class LaneFusionEncoder(nn.Module):
                 step_pos=step_pos_xy,
             )
 
-            x = x + lane_route_delta[valid_lane_mask]
+            x = x_base + lane_route_delta[valid_lane_mask]
 
         if self.route_pool_level in ["step", "route"] and self.route_fusion == "m2r":
             encoder_output = self.route_encoder(
@@ -620,10 +618,10 @@ class LaneFusionEncoder(nn.Module):
                 route_encoding = route_encoding.unsqueeze(1)
 
             lane_tokens = torch.zeros(
-                (B, P, self._channel), device=x.device, dtype=x.dtype
+                (B, P, self._channel), device=x_base.device, dtype=x_base.dtype
             )
             valid_lane_mask = ~mask_p
-            lane_tokens[valid_lane_mask] = x
+            lane_tokens[valid_lane_mask] = x_base
 
             lane_pos_xy = pos[
                 :, :, :2
@@ -642,17 +640,37 @@ class LaneFusionEncoder(nn.Module):
 
             x = lane_tokens[valid_lane_mask]
 
+        # Auxiliary prediction head: predict which lanes are on the route
+        route_logits = None
+        if self.route_aux_loss:
+            route_logits_valid = self.route_prediction_head(x).squeeze(
+                -1
+            )  # [B * P, 1] -> [B * P]
+            route_logits_valid = torch.clamp(route_logits_valid, -20, 20)
+
+            route_logits_flat = torch.zeros(
+                (B * P,),
+                device=route_logits_valid.device,
+                dtype=route_logits_valid.dtype,
+            )
+            route_logits_flat[valid_indices] = route_logits_valid  # Fill in valid parts
+            route_logits = route_logits_flat.view(B, P)
+
+            # Soft route embedding from logits: interpolate between non-route and route embeddings.
+            if self.route_fusion_binary:
+                route_prob = torch.sigmoid(route_logits_flat[valid_indices]).unsqueeze(
+                    -1
+                )
+                route_embedding = (1.0 - route_prob) * self.is_route_emb.weight[
+                    0
+                ].unsqueeze(0) + route_prob * self.is_route_emb.weight[1].unsqueeze(0)
+                x = x_base + route_embedding
+
         x = self.emb_project(self.norm(x))  # [B * P, hidden_dim]
 
         x_result = torch.zeros((B * P, x.shape[-1]), device=x.device)
         x_result[valid_indices] = x  # Fill in valid parts
         x_result = x_result.view(B, P, -1)
-
-        # Auxiliary prediction head: predict which lanes are on the route
-        route_logits = None
-        if self.route_aux_loss:
-            route_logits = self.route_prediction_head(x_result).squeeze(-1)  # [B, P]
-            route_logits = torch.clamp(route_logits, -20, 20)
 
         return x_result, mask_p.reshape(B, -1), pos.view(B, P, -1), route_logits
 
