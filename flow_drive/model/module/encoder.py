@@ -6,6 +6,7 @@ from box import ConfigBox
 
 from flow_drive.model.module.mixer import MixerBlock
 from route_language_encoder.vocabulary_encoder.encoder import VocabularyRouteEncoder
+from route_language_encoder.utils.encoder_utils import truncate_route_description
 
 
 class Encoder(nn.Module):
@@ -463,6 +464,17 @@ class LaneFusionEncoder(nn.Module):
         speed_limit: B, P, 1
         has_speed_limit: B, P, 1
         """
+        if self.route_pool_level in ["step", "route"]:
+            # Skip the "depart" step and cap both inputs at max_route_steps, in lockstep,
+            # so route_description and route_maneuver_positions stay aligned downstream.
+            route_description = [
+                truncate_route_description(rd, self.max_route_steps)
+                for rd in route_description
+            ]
+            route_maneuver_positions = route_maneuver_positions[
+                :, 1 : self.max_route_steps + 1
+            ]
+
         traffic = x[:, :, 0, 8:]
         x = x[..., :8]
 
@@ -588,9 +600,7 @@ class LaneFusionEncoder(nn.Module):
             lane_pos_xy = pos[
                 :, :, :2
             ]  # [B, P, 2] already in normalized ego-local frame
-            step_pos_xy = route_maneuver_positions[
-                :, 1 : self.max_route_steps + 1
-            ]  # [B, n_route_steps, 2], skip depart
+            step_pos_xy = route_maneuver_positions  # [B, max_route_steps, 2]
 
             lane_route_delta = self.route_conditioner(
                 route=route_encoding,
@@ -626,9 +636,7 @@ class LaneFusionEncoder(nn.Module):
             lane_pos_xy = pos[
                 :, :, :2
             ]  # [B, P, 2] already in normalized ego-local frame
-            step_pos_xy = route_maneuver_positions[
-                :, 1 : self.max_route_steps + 1
-            ]  # [B, S, 2] skip depart, already normalized
+            step_pos_xy = route_maneuver_positions  # [B, max_route_steps, 2]
 
             lane_tokens = self.route_fusion_encoder(
                 lane=lane_tokens,
