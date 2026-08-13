@@ -32,6 +32,9 @@ def _resolve_default_paths(params):
 
 
 def load_params(params_file):
+    config_override = os.environ.get("FLOW_DRIVE_CONFIG_PATH")
+    if config_override and os.path.exists(config_override):
+        params_file = config_override
     with open(params_file, "r") as f:
         params = yaml.safe_load(f)
         params = ConfigBox(params)
