@@ -38,6 +38,7 @@ encoder:
   decoder_drop_path_rate: 0.1
   route_pool_level: "step"  # "step" or "route" or "none" or "goal" or "points"
   route_fusion: "r2m"  # "m2r" or "r2m" map-to-route or route-to-map fusion
+  route_fusion_binary: True # whether to use binary route fusion (only for r2m and m2r)
   max_route_steps: 3
   route_aux_loss: False
   use_spatial_attn_bias: False
