@@ -32,6 +32,7 @@ from nuplan.planning.simulation.planner.abstract_planner import (
     PlannerInitialization,
     PlannerInput,
 )
+from nuplan.planning.scenario_builder.abstract_scenario import AbstractScenario
 from nuplan.common.maps.abstract_map_objects import (
     LaneGraphEdgeMapObject,
     RoadBlockGraphEdgeMapObject,
@@ -98,6 +99,9 @@ def outputs_to_trajectory(
 
 
 class FlowDrivePlannerWrapper(AbstractPlanner):
+    # Let planner use the nuPlan scenario object (invalid for submissions)
+    requires_scenario: bool = True
+
     def __init__(
         self,
         device: str = "cpu",
@@ -110,6 +114,7 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
         video_dir: str = None,
         emergency_brake_enabled: bool = True,
         interplan: bool = False,
+        scenario: Optional[AbstractScenario] = None,
     ):
         assert device in ["cpu", "cuda"], f"device {device} not supported"
         if device == "cuda":
@@ -145,6 +150,8 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
 
         self._render = render
         self._video_dir = video_dir
+        self._scenario = scenario
+        self._scenario_token = scenario.token if scenario is not None else None
         self._render_variants = ["original", "attention", "predicted_route"]
 
         self._interplan = interplan
