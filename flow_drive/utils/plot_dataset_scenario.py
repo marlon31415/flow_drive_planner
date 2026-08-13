@@ -33,8 +33,8 @@ ATTN_ALPHA_THRESHOLD = 0.38
 ATTN_ALPHA_GAMMA = 1.8
 ATTN_LINEWIDTH = 2.5
 ATTN_EPS = 1e-6
-ROUTE_TEXT_MAX_STEPS_DEFAULT = 9
-PRED_ROUTE_THRESHOLD = 0.5
+ROUTE_TEXT_MAX_STEPS_DEFAULT = 3
+PRED_ROUTE_THRESHOLD = 0.25
 
 
 def _count_route_steps(route_description):
@@ -387,15 +387,25 @@ def plot_scenario(data, output_filename="scenario.png", render_variant="attentio
         _plot_lanes_data(ax, data["lanes"], COLOR_LANES, alpha=0.7)
 
     # # 2. Plot route lanes
-    if "route_lanes" in data:
+    # Route lanes from scenario
+    if "route_lanes" in data and render_variant == "original":
         _plot_lanes_data(ax, data["route_lanes"], COLOR_ROUTE_LANES, alpha=0.7)
+    # Route lanes predicted by model
+    elif "lanes" in data and render_variant == "predicted_route":
+        _plot_predicted_route_lanes(ax, data["lanes"], data.get("route_lane_logits"))
 
     route_step_count = _count_route_steps(data.get("route_description"))
 
     # 2.5 Overlay lane attention on lane borders using route-step colors.
+    # Only one of route_lane_attn / lane_route_attn is available at a time. The
+    # plotting helper expects a [steps, lanes] matrix; route_lane_attn (route
+    # queries) is already oriented that way, while lane_route_attn (lane queries)
+    # is [lanes, steps] and must be transposed.
     effective_displayed_step_count = ROUTE_TEXT_MAX_STEPS_DEFAULT
     if render_variant == "attention" and "lanes" in data:
         attention = data.get("route_lane_attn")
+        if attention is None and data.get("lane_route_attn") is not None:
+            attention = np.asarray(data["lane_route_attn"]).T
         if attention is not None:
             if (
                 attention.ndim == 2
@@ -415,9 +425,6 @@ def plot_scenario(data, output_filename="scenario.png", render_variant="attentio
                 attention,
                 max_steps=effective_displayed_step_count,
             )
-
-    if render_variant == "predicted_route" and "lanes" in data:
-        _plot_predicted_route_lanes(ax, data["lanes"], data.get("route_lane_logits"))
 
     # 3. Plot static objects
     # static_objects: (N, 10), [x, y, cos, sin, width, length, type(4)]

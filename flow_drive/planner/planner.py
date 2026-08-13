@@ -261,6 +261,7 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
 
         inputs = self.planner_input_to_model_inputs(current_input)
 
+        lane_route_attn = None
         route_lane_attn = None
         route_lane_logits = None
         attn_handle = None
@@ -275,8 +276,17 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
                     if isinstance(attn, torch.Tensor):
                         attn_store["route_lane_attn"] = attn.detach()
 
+            def _store_lane_route_attention(module, module_inputs, module_outputs):
+                if isinstance(module_outputs, tuple) and len(module_outputs) > 1:
+                    attn = module_outputs[1]
+                    if isinstance(attn, torch.Tensor):
+                        attn_store["lane_route_attn"] = attn.detach()
+
             route_conditioner = getattr(
                 self._planner.encoder.lane_encoder, "route_conditioner", None
+            )
+            route_fusion = getattr(
+                self._planner.encoder.lane_encoder, "route_fusion_encoder", None
             )
             if (
                 route_conditioner is not None
@@ -285,6 +295,10 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
                 attn_handle = route_conditioner.route_to_lane_attn[
                     -1
                 ].attn.register_forward_hook(_store_route_lane_attention)
+            if route_fusion is not None and len(route_fusion.route_to_lane_attn) > 0:
+                attn_handle = route_fusion.route_to_lane_attn[
+                    -1
+                ].attn.register_forward_hook(_store_lane_route_attention)
 
             def _store_route_lane_logits(module, module_inputs, module_outputs):
                 if isinstance(module_outputs, torch.Tensor):
@@ -334,6 +348,8 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
         if self._render:
             if "route_lane_attn" in attn_store:
                 route_lane_attn = attn_store["route_lane_attn"]
+            if "lane_route_attn" in attn_store:
+                lane_route_attn = attn_store["lane_route_attn"]
             if "route_lane_logits" in attn_store:
                 route_lane_logits = attn_store["route_lane_logits"]
             inputs_for_plotting = {
@@ -349,6 +365,14 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
                     route_lane_attn[0].cpu().numpy()
                 )
             if (
+                lane_route_attn is not None
+                and lane_route_attn.ndim == 3
+                and lane_route_attn.shape[0] > 0
+            ):
+                inputs_for_plotting["lane_route_attn"] = (
+                    lane_route_attn[0].cpu().numpy()
+                )
+            if (
                 route_lane_logits is not None
                 and route_lane_logits.ndim >= 2
                 and route_lane_logits.shape[0] > 0
@@ -360,7 +384,9 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
                 inputs_for_plotting["ego_plan"] = outputs[index, 0].cpu().numpy()
             else:
                 inputs_for_plotting["ego_plan"] = outputs[0].cpu().numpy()
-            base_fig_dir = os.path.join(self._video_dir, self._planner_id)
+            base_fig_dir = os.path.join(
+                self._video_dir, f"{self._scenario_token}", self._planner_id
+            )
             for render_variant in self._render_variants:
                 fig_dir = os.path.join(base_fig_dir, render_variant)
                 os.makedirs(fig_dir, exist_ok=True)
@@ -380,7 +406,11 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
                 img_paths = sorted(
                     glob.glob(
                         os.path.join(
-                            self._video_dir, self._planner_id, render_variant, "*.png"
+                            self._video_dir,
+                            f"{self._scenario_token}",
+                            self._planner_id,
+                            render_variant,
+                            "*.png",
                         )
                     ),
                     key=lambda x: int(os.path.basename(x).split(".")[0]),
@@ -391,7 +421,8 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
                 import imageio
 
                 video_path = os.path.join(
-                    self._video_dir, f"{self._planner_id}_{render_variant}.mp4"
+                    self._video_dir,
+                    f"{self._scenario_token}_{self._planner_id}_{render_variant}.mp4",
                 )
                 with imageio.get_writer(video_path, fps=10) as video_writer:
                     for img_path in img_paths:
