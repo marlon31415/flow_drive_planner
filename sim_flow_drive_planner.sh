@@ -133,6 +133,15 @@ for POST_MODE in "${POST_MODES[@]}"; do
                 fi
 
                 echo "Completed processing for split: $SPLIT, challenge: $CHALLENGE, epoch: $EPOCH"
+
+                OUTPUT_DIR="${NUPLAN_EXP_ROOT}/exp/simulation/${CHALLENGE}/${PLANNER}/${SPLIT}/${FOLDER_NAME}"
+                echo "=== Extracting score from ${OUTPUT_DIR} ==="
+                SCORES_FILE="${SCRIPT_DIR}/simulation_scores/${RUN_ID}_${SPLIT}_${CHALLENGE}_post${POST_MODE}.csv"
+                python "${SCRIPT_DIR}/extract_score.py" \
+                    "${OUTPUT_DIR}" \
+                    "${EPOCH}" \
+                    --scores-file "${SCORES_FILE}" \
+                    --cleanup
             done
         done
     done
