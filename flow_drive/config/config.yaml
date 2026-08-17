@@ -22,7 +22,6 @@ data_processing:
   # sampling weights for scenarios
   weighted_sampling: True
   balance_mode: "cluster"  # "scenario_type" or "cluster"
-  interplan: False
 
 encoder:
   agent_num: 32
