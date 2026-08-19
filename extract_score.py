@@ -5,6 +5,9 @@ scores) from a nuplan simulation output directory and append them to a persisten
 Also extracts navigation compliance submetric and nav-adjusted score from a separate
 aggregator if available.
 
+A markdown rendering of the CSV is written alongside it as <scores_file>.md, rebuilt from the
+full file on every append.
+
 Usage (standalone):
     python extract_score.py <output_dir> <epoch> [--scores-file val_scores.csv] [--cleanup]
 
@@ -19,9 +22,12 @@ import os
 import shutil
 from collections import OrderedDict
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import pandas as pd
+
+from csv_to_markdown_table import csv_to_markdown, default_output_path
 
 # Component metrics that make up the overall score:
 #   Score = weighted-avg(progress, TTC, speed-limit, comfort)
@@ -191,12 +197,15 @@ def append_score_to_csv(
     nav_compliance: Optional[float] = None,
     per_type_nav_compliance: Optional[Dict[str, float]] = None,
     score_components: Optional[Dict[str, float]] = None,
+    markdown: bool = True,
 ) -> None:
     """
     Append a row with epoch, final score, per-scenario-type scores, and timestamp.
     Columns: epoch, score, nav_score, nav_compliance, <score component metrics>,
              <scenario_type_1>, ..., nc_<scenario_type_1>, ..., timestamp
     If the file exists, new scenario-type columns are added as needed.
+
+    Unless ``markdown`` is off, a markdown table of the whole file is (re)written beside it.
     """
     scores_dir = os.path.dirname(scores_file)
     if scores_dir:
@@ -270,6 +279,13 @@ def append_score_to_csv(
         new_df = pd.DataFrame([new_row], columns=all_cols)
 
     new_df.to_csv(scores_file, index=False)
+
+    if markdown:
+        # Rendered from the file just written rather than from new_df: read_csv turns the blanks
+        # of a column-union row into NaN, which would reach the table as "nan".
+        markdown_path = default_output_path(Path(scores_file))
+        markdown_path.write_text(csv_to_markdown(Path(scores_file)), encoding="utf-8")
+
     print(
         f"[extract_score] Epoch {epoch}: score={final_score * 100:.2f} -> {scores_file}"
     )
@@ -292,6 +308,7 @@ def extract_and_log_score(
     epoch: int,
     scores_file: str = "val_scores.csv",
     cleanup: bool = True,
+    markdown: bool = True,
 ) -> float:
     """
     End-to-end: find parquet, extract final + per-scenario-type scores,
@@ -321,6 +338,7 @@ def extract_and_log_score(
         nav_compliance=nav_compliance_val,
         per_type_nav_compliance=per_type_nav,
         score_components=score_components,
+        markdown=markdown,
     )
 
     if cleanup and os.path.isdir(output_dir):
@@ -344,6 +362,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Delete the simulation output directory after extracting score",
     )
+    parser.add_argument(
+        "--no-markdown",
+        action="store_true",
+        help="Skip the markdown table written alongside the CSV",
+    )
     args = parser.parse_args()
 
-    extract_and_log_score(args.output_dir, args.epoch, args.scores_file, args.cleanup)
+    extract_and_log_score(
+        args.output_dir,
+        args.epoch,
+        args.scores_file,
+        args.cleanup,
+        markdown=not args.no_markdown,
+    )
