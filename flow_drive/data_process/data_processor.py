@@ -63,6 +63,14 @@ class DataProcessor(object):
             "ROUTE_LANES": config.route_len,
         }  # maximum number of points per feature to extract per feature layer.
 
+        # Corrected on-route roadblock ids, cached on the first inference step.
+        # route_roadblock_correction is ego-pose dependent (starting-block selection, off-route
+        # graft, loop removal), so re-running it every simulation step makes the on-route lanes
+        # (route_lane_ids) flip near intersections even when the input route is fixed/overridden.
+        # A DataProcessor is created per scenario in the planner's initialize(), so caching here is
+        # scoped to a single scenario: correct once at the initial ego pose, then reuse.
+        self._route_roadblock_ids_corrected = None
+
     # Use for inference
     def observation_adapter(
         self,
@@ -113,10 +121,14 @@ class DataProcessor(object):
         """
         Map
         """
-        # Simply fixing disconnected routes without pre-searching for reference lines
-        route_roadblock_ids = route_roadblock_correction(
-            ego_state, map_api, route_roadblock_ids
-        )
+        # Simply fixing disconnected routes without pre-searching for reference lines.
+        # Correct once (at the initial ego pose) and cache: re-correcting every step makes the
+        # on-route lanes flip near intersections. See _route_roadblock_ids_corrected in __init__.
+        if self._route_roadblock_ids_corrected is None:
+            self._route_roadblock_ids_corrected = route_roadblock_correction(
+                ego_state, map_api, route_roadblock_ids
+            )
+        route_roadblock_ids = self._route_roadblock_ids_corrected
         coords, traffic_light_data, speed_limit, lane_route = (
             get_neighbor_vector_set_map(
                 map_api,
