@@ -26,7 +26,7 @@ from nuplan.planning.scenario_builder.scenario_filter import ScenarioFilter
 from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario_builder import (
     NuPlanScenarioBuilder,
 )
-from route_description_generation.utils.sqlite_utils import load_by_token
+from route_description_generation.dataset_index import load_by_token
 
 
 class ClusterStatsRetriever:

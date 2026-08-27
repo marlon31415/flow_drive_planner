@@ -1,3 +1,4 @@
+import logging
 import os
 import warnings
 import torch
@@ -14,7 +15,7 @@ from nuplan.common.maps.abstract_map import AbstractMap
 from nuplan.common.maps.maps_datatypes import SemanticMapLayer
 from nuplan.common.actor_state.ego_state import EgoState
 from nuplan.common.utils.interpolatable_state import InterpolatableState
-from nuplan.common.actor_state.state_representation import StateSE2
+from nuplan.common.actor_state.state_representation import Point2D, StateSE2
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from nuplan.planning.simulation.trajectory.abstract_trajectory import AbstractTrajectory
 from nuplan.planning.simulation.trajectory.interpolated_trajectory import (
@@ -74,14 +75,22 @@ from flow_drive.model.flow_drive_planner import FlowDrivePlanner
 from flow_drive.data_process.data_processor import DataProcessor
 from flow_drive.utils.train_utils import load_params, set_seed
 from flow_drive.utils.plot_dataset_scenario import plot_scenario
-
-from route_description_generation.osrm_directions import get_maneuver_positions_osrm
-from route_description_generation.routing_for_nuplan import (
-    call_routing_request_with_retry,
-    routing_to_language,
+from route_description_generation.waypoints import (
+    build_route_vias,
+    project_goal_to_route_centerline,
 )
-from route_description_generation.utils.json_utils import get_token_by_route_start
-from route_description_generation.utils.sqlite_utils import load_by_token
+
+from route_description_generation.route_extraction import (
+    build_route_centerline,
+    build_routing_task_from_route,
+)
+from route_description_generation.routing import select_route
+from route_description_generation.dataset_index import load_by_token
+
+logger = logging.getLogger(__name__)
+
+# Matches rdg's --sample-frequency-hz default.
+REFERENCE_SAMPLE_HZ = 10
 
 
 def outputs_to_trajectory(
@@ -164,6 +173,11 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
         )
         self._map_name = None
         self._epsg = None
+        # Path the OSRM route is validated against, and what it was derived from (which decides the
+        # shape check). None => single unvalidated request.
+        self._reference_polyline = None
+        self._reference_kind = "trajectory"
+        self._route_warned = False
         self._route_data_file = os.path.join(
             self._params.data_processing.data_processed_path_val,
             self._params.data_processing.route_data,
@@ -195,6 +209,11 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
         self._mission_goal = initialization.mission_goal
         self._trajectory_scorer.initialize(self._map_api, self._route_roadblock_ids)
 
+        # Route the OSRM request is built from; filled in on the first step from the route dataset
+        # (see planner_input_to_model_inputs). These initialization ids still feed the model and the
+        # trajectory scorer.
+        self._routing_route_ids = None
+
         self._planner = FlowDrivePlanner(
             self._params,
             self._device,
@@ -208,43 +227,133 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
         self._future_horizon = self._planner.params.data_processing.future_time_horizon
         self._initialization = initialization
 
+    def _build_reference_polyline(self, routing_horizon_s: float) -> Optional[List[Tuple[float, float]]]:
+        """Ground-truth path the live OSRM route is checked against, or None if unavailable.
+
+        The same reference the offline dataset validates against, so a route accepted here is
+        accepted on the same terms. It never reaches the model — it only decides *which* OSRM
+        description best matches the route the planner was already handed.
+
+        Taken from this scenario's own iteration 0 over the dataset's own horizon, so it spans
+        exactly the window the stored route was built from — the dataset and the simulation extract
+        at the same offset. trim_polyline then cuts it to the ego-to-goal stretch at each step.
+        """
+        if self._scenario is None:
+            return None
+
+        horizon_s = float(routing_horizon_s)
+        try:
+            states = list(
+                self._scenario.get_ego_future_trajectory(
+                    iteration=0,
+                    num_samples=int(REFERENCE_SAMPLE_HZ * horizon_s),
+                    time_horizon=horizon_s,
+                )
+            )
+        except Exception as error:
+            logger.warning(
+                "No ground-truth trajectory for scenario %s (%s); routing falls back to a single "
+                "unvalidated request",
+                self._scenario_token,
+                error,
+            )
+            return None
+        if not states:
+            return None
+
+        # Prepend iteration 0's own state, matching the offline builder's driven_states.
+        return [
+            (float(s.rear_axle.point.x), float(s.rear_axle.point.y))
+            for s in [self._scenario.initial_ego_state] + states
+        ]
+
     def planner_input_to_model_inputs(
         self, planner_input: PlannerInput
     ) -> Dict[str, torch.Tensor]:
         history = planner_input.history
         traffic_light_data = list(planner_input.traffic_light_data)
 
-        # Query routing API for live route description
-        route_start = [
-            history.current_state[0].center.x,
-            history.current_state[0].center.y,
-        ]
+        ego_state = history.current_state[0]
         if self._route_end is None:
-            # Only ONCE per simulation:
-            # Search for scenario token in route-dataset and store it
-            token = get_token_by_route_start(self._route_data_file, route_start)
+            # Only ONCE per simulation.
             route_data = load_by_token(
-                self._route_index_file, self._route_data_file, token
+                self._route_index_file, self._route_data_file, self._scenario_token
             )
-            if not self._interplan:
-                self._route_end = route_data["routing_data"]["route_end"]
+            if self._interplan or self._alternative_routing:
+                goal_xy, _, _ = project_goal_to_route_centerline(
+                    self._map_api,
+                    self._route_roadblock_ids,
+                        self._mission_goal,
+                    float(self._mission_goal.heading),
+                )
+                self._route_end = np.array(goal_xy)
+                self._routing_route_ids = self._route_roadblock_ids
             else:
-                self._route_end = np.array([self._mission_goal.x, self._mission_goal.y])
+                # Already projected
+                self._route_end = route_data["routing_data"]["route_end"]
+                self._routing_route_ids = route_data["routing_data"].get("route_roadblock_ids")
             self._map_name = route_data["scenario_data"]["map_name"]
             self._epsg = route_data["routing_data"]["route_epsg"]
-        routing_direction = call_routing_request_with_retry(
-            start=route_start,
-            destination=self._route_end,
+
+
+            if self._interplan or self._alternative_routing:
+                # Reference polyline is build from route centerline instead of
+                # the logged trajectory, since this setting requires the planner
+                # to deviate from the logged path.
+                self._reference_polyline = build_route_centerline(
+                    self._map_api,
+                    self._routing_route_ids,
+                    (ego_state.rear_axle.point.x, ego_state.rear_axle.point.y),
+                )
+                self._reference_kind = "centerline"
+            else:
+                self._reference_polyline = self._build_reference_polyline(
+                    route_data["routing_data"]["routing_horizon_s"]
+                )
+                self._reference_kind = "trajectory"
+        # Via-points pinning OSRM to the intended branch
+        vias = build_route_vias(
+            self._map_api,
+            self._routing_route_ids,
+            ego_state.rear_axle.point,
+            goal_point=Point2D(float(self._route_end[0]), float(self._route_end[1])),
+        )
+
+        routing_task = build_routing_task_from_route(
+            self._map_api,
+            self._routing_route_ids,
+            ego_state.rear_axle.point,
+            float(ego_state.rear_axle.heading),
+            self._route_end,
             map_name=self._map_name,
-            cs=f"EPSG:{self._epsg}",
-            routing_service="osrm",
+            epsg=self._epsg,
+            reference_polyline=self._reference_polyline,
+            reference_kind=self._reference_kind,
+            vias=vias,
         )
-        route_description = routing_to_language(
-            routing_direction, routing_service="osrm"
-        )
-        route_maneuver_positions = get_maneuver_positions_osrm(
-            routing_direction, self._epsg
-        )
+
+        # Walk the same request ladder the offline dataset uses and keep the variant that best
+        # matches the route, rather than trusting a single request.
+        selection = select_route(routing_task)
+        if (
+            self._reference_polyline
+            and not selection.validation.get("valid")
+            and not self._route_warned
+        ):
+            # The description below is the closest attempt rather than an agreeing one, so the model
+            # is being told about a route it may not be driving. Reported once per scenario.
+            validation = selection.validation
+            logger.warning(
+                "Scenario %s: no OSRM route agreed with the driven route (best attempt %s, "
+                "length ratio %s, path deviation mean %s m); using it anyway",
+                self._scenario_token,
+                selection.strategy,
+                validation.get("ratio_nuplan_over_osrm"),
+                validation.get("path_deviation_mean_m"),
+            )
+            self._route_warned = True
+        route_description = selection.description
+        route_maneuver_positions = selection.maneuver_positions
 
         model_inputs = self._data_processor.observation_adapter(
             history,
