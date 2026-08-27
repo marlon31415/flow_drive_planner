@@ -114,6 +114,7 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
         video_dir: str = None,
         emergency_brake_enabled: bool = True,
         interplan: bool = False,
+        alternative_routing: bool = False,
         scenario: Optional[AbstractScenario] = None,
     ):
         assert device in ["cpu", "cuda"], f"device {device} not supported"
@@ -155,6 +156,8 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
         self._render_variants = ["original", "attention", "predicted_route"]
 
         self._interplan = interplan
+        # Whether to use alternative routing from nucontrol
+        self._alternative_routing = alternative_routing
 
         self._route_end = (
             None  # might differ from mission goal because it comes from route-dataset
