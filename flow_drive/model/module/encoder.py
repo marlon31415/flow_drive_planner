@@ -6,7 +6,10 @@ from box import ConfigBox
 
 from flow_drive.model.module.mixer import MixerBlock
 from route_language_encoder.vocabulary_encoder.encoder import VocabularyRouteEncoder
-from route_language_encoder.utils.encoder_utils import truncate_route_description
+from route_language_encoder.utils.encoder_utils import (
+    to_cumulative_distances,
+    truncate_route_description,
+)
 
 
 class Encoder(nn.Module):
@@ -39,6 +42,9 @@ class Encoder(nn.Module):
             route_fusion=getattr(config, "route_fusion", "r2m"),
             route_fusion_binary=getattr(config, "route_fusion_binary", True),
             route_token_pool=getattr(config, "route_token_pool", "cls"),
+            route_cumulative_distance=getattr(
+                config, "route_cumulative_distance", True
+            ),
         )
 
         self.fusion = FusionEncoder(
@@ -372,6 +378,7 @@ class LaneFusionEncoder(nn.Module):
         route_fusion="r2m",
         route_fusion_binary=True,
         route_token_pool="cls",
+        route_cumulative_distance=True,
     ):
         super().__init__()
 
@@ -380,6 +387,7 @@ class LaneFusionEncoder(nn.Module):
         self.route_aux_loss = route_aux_loss
         self.route_fusion = route_fusion
         self.route_fusion_binary = route_fusion_binary
+        self.route_cumulative_distance = route_cumulative_distance
 
         if self.route_fusion not in ["m2r", "r2m"]:
             raise ValueError(
@@ -476,6 +484,12 @@ class LaneFusionEncoder(nn.Module):
         if self.route_pool_level in ["step", "route"]:
             # Skip the "depart" step and cap both inputs at max_route_steps, in lockstep,
             # so route_description and route_maneuver_positions stay aligned downstream.
+            if self.route_cumulative_distance:
+                # Before truncation: the running total has to start at the route origin
+                # for the distances to mean "from the ego".
+                route_description = [
+                    to_cumulative_distances(rd) for rd in route_description
+                ]
             route_description = [
                 truncate_route_description(rd, self.max_route_steps)
                 for rd in route_description
