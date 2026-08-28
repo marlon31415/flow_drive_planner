@@ -327,12 +327,14 @@ def route_to_local_frame(batch):
             anchor_state = anchor_state.detach().cpu().numpy()
 
         transformed = np.zeros_like(maneuver_positions, dtype=np.float32)
+        valid = np.zeros(maneuver_positions.shape[:2], dtype=bool)
 
         for b in range(B):
             coords = maneuver_positions[b]
 
             # mask zero-padded maneuvers
             zero_mask = np.all(coords == 0.0, axis=-1)
+            valid[b] = ~zero_mask
 
             if np.any(~zero_mask):
                 transformed_coords = coordinates_to_local_frame(
@@ -347,6 +349,7 @@ def route_to_local_frame(batch):
             device=device,
             dtype=torch.float32,
         )
+        batch["route_maneuver_valid"] = torch.from_numpy(valid).to(device=device)
 
     return batch
 

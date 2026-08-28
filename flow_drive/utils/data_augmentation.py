@@ -299,6 +299,14 @@ class StatePerturbation:
         )
         inputs["route_lanes"][mask] = 0.0
 
+        # route maneuver positions
+        if "route_maneuver_positions" in inputs:
+            route_valid = inputs.get("route_maneuver_valid")
+            inputs["route_maneuver_positions"] = vector_transform(
+                inputs["route_maneuver_positions"], transform_matrix, center_xy
+            )
+            inputs["route_maneuver_positions"][~route_valid.bool()] = 0.0
+
         # static objects xy
         mask = torch.sum(torch.ne(inputs["static_objects"][..., :10], 0), dim=-1) == 0
         inputs["static_objects"][..., :2] = vector_transform(
