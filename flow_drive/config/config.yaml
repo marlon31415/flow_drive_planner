@@ -41,6 +41,7 @@ encoder:
   max_route_steps: 3
   route_aux_loss: False
   use_spatial_attn_bias: False
+  route_token_pool: "cls" # "cls" = self-attention over route tokens, "mean" = mean pooling over route tokens
 
 diffuser:
   pred_horizon: 40

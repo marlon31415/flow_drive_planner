@@ -38,6 +38,7 @@ class Encoder(nn.Module):
             use_spatial_attn_bias=config.use_spatial_attn_bias,
             route_fusion=getattr(config, "route_fusion", "r2m"),
             route_fusion_binary=getattr(config, "route_fusion_binary", True),
+            route_token_pool=getattr(config, "route_token_pool", "cls"),
         )
 
         self.fusion = FusionEncoder(
@@ -368,6 +369,7 @@ class LaneFusionEncoder(nn.Module):
         use_spatial_attn_bias=False,
         route_fusion="r2m",
         route_fusion_binary=True,
+        route_token_pool="cls",
     ):
         super().__init__()
 
@@ -426,7 +428,9 @@ class LaneFusionEncoder(nn.Module):
         if self.route_pool_level in ["step", "route"]:
             if self.route_fusion == "m2r":
                 self.route_encoder = VocabularyRouteEncoder(
-                    hidden_dim=channels_mlp_dim, max_route_steps=max_route_steps
+                    hidden_dim=channels_mlp_dim,
+                    max_route_steps=max_route_steps,
+                    token_pool=route_token_pool,
                 )
                 self.route_fusion_encoder = RouteFusionEncoder(
                     hidden_dim=channels_mlp_dim,
@@ -435,7 +439,9 @@ class LaneFusionEncoder(nn.Module):
             else:
                 # Keep route conditioning in lane channel space so it can be added to x directly.
                 self.route_encoder = VocabularyRouteEncoder(
-                    hidden_dim=channels_mlp_dim, max_route_steps=max_route_steps
+                    hidden_dim=channels_mlp_dim,
+                    max_route_steps=max_route_steps,
+                    token_pool=route_token_pool,
                 )
                 self.route_conditioner = RouteToLaneConditioner(
                     hidden_dim=channels_mlp_dim,
