@@ -84,6 +84,7 @@ class Encoder(nn.Module):
         lanes_is_route = inputs["lanes_is_route"]
         route_description = inputs["route_description"]
         route_maneuver_positions = inputs["route_maneuver_positions"]
+        route_maneuver_headings = inputs.get("route_maneuver_headings")
 
         B = neighbors.shape[0]
 
@@ -99,6 +100,7 @@ class Encoder(nn.Module):
             route_description,
             route_maneuver_positions,
             ego_anchor,
+            route_maneuver_headings,
         )
 
         encoding_input = [encoding_neighbors, encoding_static, encoding_lanes]
@@ -464,6 +466,7 @@ class LaneFusionEncoder(nn.Module):
         route_description,
         route_maneuver_positions,
         ego_anchor,
+        route_maneuver_headings=None,
     ):
         """
         x: B, P, V, D (x, y, x'-x, y'-y, x_left-x, y_left-y, x_right-x, y_right-y, traffic(4))
@@ -480,6 +483,10 @@ class LaneFusionEncoder(nn.Module):
             route_maneuver_positions = route_maneuver_positions[
                 :, 1 : self.max_route_steps + 1
             ]
+            if route_maneuver_headings is not None:
+                route_maneuver_headings = route_maneuver_headings[
+                    :, 1 : self.max_route_steps + 1
+                ]
 
         traffic = x[:, :, 0, 8:]
         x = x[..., :8]
@@ -586,6 +593,7 @@ class LaneFusionEncoder(nn.Module):
                 route_description,
                 route_maneuver_positions,
                 pool_level=self.route_pool_level,
+                route_maneuver_headings=route_maneuver_headings,
             )
             route_encoding = (
                 encoder_output.x
@@ -624,6 +632,7 @@ class LaneFusionEncoder(nn.Module):
                 route_description,
                 route_maneuver_positions,
                 pool_level=self.route_pool_level,
+                route_maneuver_headings=route_maneuver_headings,
             )
             route_encoding = (
                 encoder_output.x

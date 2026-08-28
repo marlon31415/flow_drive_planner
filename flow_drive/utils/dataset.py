@@ -27,6 +27,7 @@ from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario_builder import (
     NuPlanScenarioBuilder,
 )
 from route_description_generation.dataset_index import load_by_token
+from route_description_generation.osrm_client import extract_maneuver_headings
 
 
 class ClusterStatsRetriever:
@@ -410,6 +411,13 @@ class FlowDriveDataset(Dataset):
         route_maneuver_positions = np.array(
             route_data["routing_data"]["route_maneuver_positions"]
         )
+        route_maneuver_headings = np.array(
+            extract_maneuver_headings(
+                route_data["routing_data"]["route_directions"],
+                max_maneuvers=route_maneuver_positions.shape[0],
+            ),
+            dtype=np.float32,
+        )
 
         data = {
             "idx": idx,
@@ -425,6 +433,7 @@ class FlowDriveDataset(Dataset):
             "static_objects": static_objects,
             "route_description": route_description,
             "route_maneuver_positions": route_maneuver_positions,
+            "route_maneuver_headings": route_maneuver_headings,
             "anchor_ego_state": anchor_ego_state,
         }
         return data

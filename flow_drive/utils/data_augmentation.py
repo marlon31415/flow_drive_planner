@@ -291,6 +291,15 @@ class StatePerturbation:
             )
             inputs["route_maneuver_positions"][~route_valid.bool()] = 0.0
 
+            # Orientation has to follow the same rotation, or the maneuver would point
+            # the old way while sitting at its new position. heading_transform is the
+            # same rotation already applied to ego_future / neighbors_future headings.
+            if "route_maneuver_headings" in inputs:
+                inputs["route_maneuver_headings"] = heading_transform(
+                    inputs["route_maneuver_headings"], transform_matrix
+                )
+                inputs["route_maneuver_headings"][~route_valid.bool()] = 0.0
+
         # static objects xy
         mask = torch.sum(torch.ne(inputs["static_objects"][..., :10], 0), dim=-1) == 0
         inputs["static_objects"][..., :2] = vector_transform(

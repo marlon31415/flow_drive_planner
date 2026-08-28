@@ -76,6 +76,7 @@ class DataProcessor(object):
         map_api,
         route_roadblock_ids,
         route_maneuver_positions,
+        route_maneuver_headings=None,
         device="cpu",
     ):
         """
@@ -154,17 +155,26 @@ class DataProcessor(object):
         """
         Route
         """
+        route_batch = {
+            "route_maneuver_positions": np.array([route_maneuver_positions]),
+            "anchor_ego_state": anchor_ego_state[np.newaxis, :],
+        }
+        if route_maneuver_headings is not None:
+            route_batch["route_maneuver_headings"] = np.array(
+                [route_maneuver_headings], dtype=np.float32
+            )
         route_batch_local = route_to_local_frame(
-            {
-                "route_maneuver_positions": np.array([route_maneuver_positions]),
-                "anchor_ego_state": anchor_ego_state[np.newaxis, :],
-            }
+            route_batch
         )  # Function is designed to process batches
         route_maneuver_positions = route_batch_local[
             "route_maneuver_positions"
         ].squeeze(
             0
         )  # convert_to_model_inputs unsqueezes again
+        if route_maneuver_headings is not None:
+            route_maneuver_headings = route_batch_local[
+                "route_maneuver_headings"
+            ].squeeze(0)
 
         # print("ego current state:", ego_current_state)
 
@@ -174,6 +184,8 @@ class DataProcessor(object):
             "static_objects": static_objects,
             "route_maneuver_positions": route_maneuver_positions,
         }
+        if route_maneuver_headings is not None:
+            data["route_maneuver_headings"] = route_maneuver_headings
         data.update(vector_map)
         data = convert_to_model_inputs(data, device)
 

@@ -351,6 +351,23 @@ def route_to_local_frame(batch):
         )
         batch["route_maneuver_valid"] = torch.from_numpy(valid).to(device=device)
 
+        # Headings share the maneuver index space, so the same validity mask applies.
+        # They arrive as absolute map-frame angles and must be rebased onto the ego just
+        # like the positions -- otherwise orientation stays global while everything
+        # around it is ego-centric.
+        headings = batch.get("route_maneuver_headings")
+        if headings is not None:
+            if isinstance(headings, torch.Tensor):
+                headings = headings.detach().cpu().numpy()
+            headings = np.asarray(headings, dtype=np.float32)
+            rel = headings - anchor_state[:, 2:3]
+            rel = np.arctan2(np.sin(rel), np.cos(rel)).astype(np.float32)
+            local_headings = np.where(valid, rel, 0.0).astype(np.float32)
+            batch["route_maneuver_headings"] = torch.from_numpy(local_headings).to(
+                device=device,
+                dtype=torch.float32,
+            )
+
     return batch
 
 

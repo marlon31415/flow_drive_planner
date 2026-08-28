@@ -11,6 +11,8 @@ import glob
 
 warnings.filterwarnings("ignore")
 
+from route_description_generation.osrm_client import extract_maneuver_headings
+
 from nuplan.common.maps.abstract_map import AbstractMap
 from nuplan.common.maps.maps_datatypes import SemanticMapLayer
 from nuplan.common.actor_state.ego_state import EgoState
@@ -354,6 +356,9 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
             self._route_warned = True
         route_description = selection.description
         route_maneuver_positions = selection.maneuver_positions
+        route_maneuver_headings = extract_maneuver_headings(
+            selection.routing_output, max_maneuvers=len(route_maneuver_positions)
+        )
 
         model_inputs = self._data_processor.observation_adapter(
             history,
@@ -361,6 +366,7 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
             self._map_api,
             self._route_roadblock_ids,
             route_maneuver_positions,
+            route_maneuver_headings,
             self._device,
         )
 
