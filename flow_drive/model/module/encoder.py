@@ -73,6 +73,14 @@ class Encoder(nn.Module):
 
         self.apply(_basic_init)
 
+        # Re-zero after the sweep above: _basic_init xavier-fills every nn.Linear, which
+        # would undo the zero-init and start the fused route channel wide open instead of
+        # closed.
+        route_fused_proj = getattr(self.lane_encoder, "route_fused_proj", None)
+        if route_fused_proj is not None:
+            nn.init.zeros_(route_fused_proj.weight)
+            nn.init.zeros_(route_fused_proj.bias)
+
         # Initialize embedding MLP:
         nn.init.normal_(self.neighbor_encoder.type_emb.weight, std=0.02)
         nn.init.normal_(self.lane_encoder.speed_limit_emb.weight, std=0.02)
@@ -465,6 +473,13 @@ class LaneFusionEncoder(nn.Module):
                 nn.LayerNorm(channels_mlp_dim), nn.Linear(channels_mlp_dim, 1)
             )
 
+        # In addition to route_fusion_binary this enables better gradient flow
+        # to the route encoder, since binary route encoding is not the only
+        # learning signal anymore.
+        self.route_fused_proj = nn.Linear(channels_mlp_dim, channels_mlp_dim)
+        nn.init.zeros_(self.route_fused_proj.weight)
+        nn.init.zeros_(self.route_fused_proj.bias)
+
     def forward(
         self,
         x,
@@ -701,7 +716,12 @@ class LaneFusionEncoder(nn.Module):
                 route_embedding = (1.0 - route_prob) * self.is_route_emb.weight[
                     0
                 ].unsqueeze(0) + route_prob * self.is_route_emb.weight[1].unsqueeze(0)
-                x = x_base + route_embedding
+                # Keep the fused token as a gated residual.
+                # `x` here is the route-conditioned lane token; x_base is the same token
+                # before any route information. Adding back a gated share of the
+                # difference preserves the binary channel while letting richer route
+                # structure through if it earns its keep.
+                x = x_base + route_embedding + self.route_fused_proj(x - x_base)
 
         x = self.emb_project(self.norm(x))  # [B * P, hidden_dim]
 
