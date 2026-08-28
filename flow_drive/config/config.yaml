@@ -65,4 +65,7 @@ train:
   ema_power: 0.99
   warmup_steps: 1500
   learning_rate: 0.0002
+  lambda_route: 0.01
+  route_pos_weight: 3.27 # route_pos_weight offsets the ~23% on-route class prior
+  route_contested_weight: 1.0 # upweights lanes at a fork whose arms disagree about route membership (1.0 = off).
   weight_decay: 0.00001
