@@ -48,19 +48,16 @@ class DataProcessor(object):
             "LANE",
             "LEFT_BOUNDARY",
             "RIGHT_BOUNDARY",
-            "ROUTE_LANES",
         ]  # name of map features to be extracted.
         self._max_elements = {
             "LANE": config.lane_num,
             "LEFT_BOUNDARY": config.lane_num,
             "RIGHT_BOUNDARY": config.lane_num,
-            "ROUTE_LANES": config.route_num,
         }  # maximum number of elements to extract per feature layer.
         self._max_points = {
             "LANE": config.lane_len,
             "LEFT_BOUNDARY": config.lane_len,
             "RIGHT_BOUNDARY": config.lane_len,
-            "ROUTE_LANES": config.route_len,
         }  # maximum number of points per feature to extract per feature layer.
 
         # Corrected on-route roadblock ids, cached on the first inference step.

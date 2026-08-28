@@ -514,61 +514,40 @@ def map_process(
                 polylines, left_boundary, right_boundary, avails, traffic_light_state
             )
 
-        elif feature_name == "ROUTE_LANES":
-            loc = 0
-            # TODO: add has speed limit
-            vector_map_route_lanes = np.zeros(
-                (
-                    max_elements["ROUTE_LANES"],
-                    vector_map_lanes.shape[-2],
-                    vector_map_lanes.shape[-1],
-                ),
-                dtype=np.float32,
-            )
-            route_lanes_speed_limit = np.zeros(
-                (max_elements["ROUTE_LANES"], 1), dtype=np.float32
-            )
-            route_lanes_has_speed_limit = np.zeros(
-                (max_elements["ROUTE_LANES"], 1), dtype=np.bool_
-            )
-            for i in range(len(lane_on_route)):
-                if lane_on_route[i] == True:
-                    vector_map_route_lanes[loc] = vector_map_lanes[i]
-                    route_lanes_speed_limit[loc] = lane_speed_limit_array[i]
-                    route_lanes_has_speed_limit[loc] = lane_has_speed_limit_array[i]
-                    loc += 1
-                if loc == max_elements["ROUTE_LANES"]:
-                    break
         else:
             pass
 
+    # No separate route_lanes buffer: on-route lanes are identified by lanes_is_route,
+    # which covers all of them, while that buffer was capped at route_num and read by
+    # nothing in the model.
     vector_map_output = {
         "lanes": vector_map_lanes,
         "lanes_speed_limit": lane_speed_limit_array,
         "lanes_has_speed_limit": lane_has_speed_limit_array,
-        "route_lanes": vector_map_route_lanes,
-        "route_lanes_speed_limit": route_lanes_speed_limit,
-        "route_lanes_has_speed_limit": route_lanes_has_speed_limit,
     }
 
-    valid_lanes_mask = ~(np.all(vector_map_lanes == 0, axis=1))
-    valid_lanes_idx = np.where(valid_lanes_mask)[0]
-    valid_route_mask = ~(np.all(vector_map_route_lanes == 0, axis=(1, 2)))
-    valid_route_lanes = vector_map_route_lanes[valid_route_mask]
-    if valid_route_lanes.size == 0:
-        lanes_is_route = np.zeros((vector_map_lanes.shape[0], 1), dtype=np.int64)
-    else:
-        lane_first_centers = vector_map_lanes[valid_lanes_idx, 0, :2]
-        lane_last_centers = vector_map_lanes[valid_lanes_idx, -1, :2]
-        route_first_centers = valid_route_lanes[:, 0, :2]
-        route_last_centers = valid_route_lanes[:, -1, :2]
-        lanes_is_route = np.zeros((vector_map_lanes.shape[0], 1), dtype=np.int64)
-        for lane_idx, (lf, ll) in zip(
-            valid_lanes_idx, zip(lane_first_centers, lane_last_centers)
-        ):
-            for rf, rl in zip(route_first_centers, route_last_centers):
-                if np.linalg.norm(lf - rf) < 0.2 and np.linalg.norm(ll - rl) < 0.2:
-                    lanes_is_route[lane_idx, 0] = 1
-                    break
+    # Collapse both the point axis and the feature axis: axis=1 alone leaves a
+    # [n_lanes, n_features] mask, which the old endpoint-matching code got away with
+    # only because it immediately took np.where(...)[0].
+    valid_lanes_mask = ~(np.all(vector_map_lanes == 0, axis=(1, 2)))
+
+    # Take route membership straight from lane_on_route, which is indexed exactly like
+    # vector_map_lanes (see the ROUTE_LANES branch above, which pairs lane_on_route[i]
+    # with vector_map_lanes[i]).
+    #
+    # It used to be reconstructed by matching lane endpoints against the route_lanes
+    # buffer within 0.2 m. That buffer is capped at max_elements["ROUTE_LANES"] (25),
+    # so once a scenario had more than 25 on-route lanes the rest were silently labelled
+    # 0 -- measured at 21.5% of training scenarios, and because lanes are sorted by
+    # distance to the ego the ones dropped are the farthest ahead along the route.
+    lanes_is_route = np.zeros((vector_map_lanes.shape[0], 1), dtype=np.int64)
+    n_lanes = min(len(lane_on_route), vector_map_lanes.shape[0])
+    if n_lanes:
+        lanes_is_route[:n_lanes, 0] = np.asarray(
+            lane_on_route[:n_lanes], dtype=np.int64
+        )
+    # Padded lane slots carry no route membership.
+    lanes_is_route[~valid_lanes_mask, 0] = 0
+
     vector_map_output["lanes_is_route"] = lanes_is_route
     return vector_map_output

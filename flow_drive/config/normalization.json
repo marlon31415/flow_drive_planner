@@ -27,14 +27,6 @@
         "mean": [0],
         "std": [20]
     },
-    "route_lanes": {
-        "mean": [10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        "std": [20, 20, 20, 20, 20, 20, 20, 20, 1, 1, 1, 1]
-    },
-    "route_lanes_speed_limit": {
-        "mean": [0],
-        "std": [20]
-    },
     "route_maneuver_positions": {
         "mean": [10, 0],
         "std": [20, 20]

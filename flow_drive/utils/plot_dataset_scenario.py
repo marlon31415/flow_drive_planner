@@ -387,9 +387,18 @@ def plot_scenario(data, output_filename="scenario.png", render_variant="attentio
         _plot_lanes_data(ax, data["lanes"], COLOR_LANES, alpha=0.7)
 
     # # 2. Plot route lanes
-    # Route lanes from scenario
-    if "route_lanes" in data and render_variant == "original":
-        _plot_lanes_data(ax, data["route_lanes"], COLOR_ROUTE_LANES, alpha=0.7)
+    # Route lanes from scenario, selected via the per-lane flag rather than a separate
+    # buffer: lanes_is_route covers every on-route lane, whereas the old route_lanes
+    # tensor was capped at route_num (25) and silently dropped the rest.
+    if (
+        "lanes" in data
+        and data.get("lanes_is_route") is not None
+        and render_variant == "original"
+    ):
+        is_route = np.asarray(data["lanes_is_route"]).reshape(-1).astype(bool)
+        lanes = data["lanes"]
+        if is_route.shape[0] == lanes.shape[0] and is_route.any():
+            _plot_lanes_data(ax, lanes[is_route], COLOR_ROUTE_LANES, alpha=0.7)
     # Route lanes predicted by model
     elif "lanes" in data and render_variant == "predicted_route":
         _plot_predicted_route_lanes(ax, data["lanes"], data.get("route_lane_logits"))

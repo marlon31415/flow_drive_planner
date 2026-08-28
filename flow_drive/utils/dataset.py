@@ -403,10 +403,6 @@ class FlowDriveDataset(Dataset):
         lanes_speed_limit = data["lanes_speed_limit"]
         lanes_has_speed_limit = data["lanes_has_speed_limit"]
 
-        route_lanes = data["route_lanes"]
-        route_lanes_speed_limit = data["route_lanes_speed_limit"]
-        route_lanes_has_speed_limit = data["route_lanes_has_speed_limit"]
-
         static_objects = data["static_objects"]
 
         route_data = load_by_token(self.route_index_path, self.route_data_path, token)
@@ -426,9 +422,6 @@ class FlowDriveDataset(Dataset):
             "lanes_speed_limit": lanes_speed_limit,
             "lanes_has_speed_limit": lanes_has_speed_limit,
             "lanes_is_route": lanes_is_route,
-            "route_lanes": route_lanes,
-            "route_lanes_speed_limit": route_lanes_speed_limit,
-            "route_lanes_has_speed_limit": route_lanes_has_speed_limit,
             "static_objects": static_objects,
             "route_description": route_description,
             "route_maneuver_positions": route_maneuver_positions,
