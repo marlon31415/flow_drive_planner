@@ -443,7 +443,7 @@ class LaneFusionEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-        if self.route_pool_level in ["step", "route"]:
+        if self.route_pool_level == "step":
             if self.route_fusion == "m2r":
                 self.route_encoder = VocabularyRouteEncoder(
                     hidden_dim=channels_mlp_dim,
@@ -496,7 +496,7 @@ class LaneFusionEncoder(nn.Module):
         speed_limit: B, P, 1
         has_speed_limit: B, P, 1
         """
-        if self.route_pool_level in ["step", "route"]:
+        if self.route_pool_level == "step":
             # Skip the "depart" step and cap both inputs at max_route_steps, in lockstep,
             # so route_description and route_maneuver_positions stay aligned downstream.
             if self.route_cumulative_distance:
@@ -617,22 +617,16 @@ class LaneFusionEncoder(nn.Module):
             x = x_base + points_embedding  # [B * P, channels_mlp_dim]
 
         # Condition lane embeddings with route->lane cross-attention in channel space.
-        if self.route_pool_level in ["step", "route"] and self.route_fusion == "r2m":
+        if self.route_pool_level == "step" and self.route_fusion == "r2m":
             encoder_output = self.route_encoder(
                 route_description,
                 route_maneuver_positions,
-                pool_level=self.route_pool_level,
                 route_maneuver_headings=route_maneuver_headings,
             )
             route_encoding = (
                 encoder_output.x
-            )  # [B, channels_mlp_dim] or [B, n_route_steps, channels_mlp_dim]
-            route_encoding_mask = (
-                encoder_output.steps_mask
-            )  # [B, channels_mlp_dim] or None
-
-            if route_encoding.dim() == 2:
-                route_encoding = route_encoding.unsqueeze(1)
+            )  # [B, n_route_steps, channels_mlp_dim]
+            route_encoding_mask = encoder_output.steps_mask  # [B, n_route_steps]
 
             lane_tokens = torch.zeros(
                 (B, P, self._channel), device=x_base.device, dtype=x_base.dtype
@@ -656,20 +650,16 @@ class LaneFusionEncoder(nn.Module):
 
             x = x_base + lane_route_delta[valid_lane_mask]
 
-        if self.route_pool_level in ["step", "route"] and self.route_fusion == "m2r":
+        if self.route_pool_level == "step" and self.route_fusion == "m2r":
             encoder_output = self.route_encoder(
                 route_description,
                 route_maneuver_positions,
-                pool_level=self.route_pool_level,
                 route_maneuver_headings=route_maneuver_headings,
             )
             route_encoding = (
                 encoder_output.x
-            )  # [B, channels_mlp_dim] or [B, n_route_steps, channels_mlp_dim]
+            )  # [B, n_route_steps, channels_mlp_dim]
             route_encoding_mask = encoder_output.steps_mask  # [B, n_route_steps]
-
-            if route_encoding.dim() == 2:
-                route_encoding = route_encoding.unsqueeze(1)
 
             lane_tokens = torch.zeros(
                 (B, P, self._channel), device=x_base.device, dtype=x_base.dtype
