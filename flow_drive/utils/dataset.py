@@ -418,6 +418,9 @@ class FlowDriveDataset(Dataset):
             ),
             dtype=np.float32,
         )
+        # Invalid maneuvers are padded with [0, 0].
+        # After local transformation first position might indistinguishable from invalid maneuvers.
+        route_maneuver_valid = ~np.all(route_maneuver_positions == 0.0, axis=-1)
 
         data = {
             "idx": idx,
@@ -434,6 +437,7 @@ class FlowDriveDataset(Dataset):
             "route_description": route_description,
             "route_maneuver_positions": route_maneuver_positions,
             "route_maneuver_headings": route_maneuver_headings,
+            "route_maneuver_valid": route_maneuver_valid,
             "anchor_ego_state": anchor_ego_state,
         }
         return data

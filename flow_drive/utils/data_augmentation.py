@@ -283,22 +283,27 @@ class StatePerturbation:
         )
         inputs["lanes"][mask] = 0.0
 
-        # route maneuver positions
+        # route maneuver positions - align with state perturbation
         if "route_maneuver_positions" in inputs:
-            route_valid = inputs.get("route_maneuver_valid")
+            route_pad = ~inputs["route_maneuver_valid"].bool()
+            # float64 at load (global UTM loses ~7 cm in float32); route_to_local_frame is
+            # what normally narrows it, so match the transform instead of assuming.
             inputs["route_maneuver_positions"] = vector_transform(
-                inputs["route_maneuver_positions"], transform_matrix, center_xy
+                inputs["route_maneuver_positions"].to(transform_matrix.dtype),
+                transform_matrix,
+                center_xy,
             )
-            inputs["route_maneuver_positions"][~route_valid.bool()] = 0.0
+            inputs["route_maneuver_positions"][route_pad] = 0.0
 
             # Orientation has to follow the same rotation, or the maneuver would point
             # the old way while sitting at its new position. heading_transform is the
             # same rotation already applied to ego_future / neighbors_future headings.
             if "route_maneuver_headings" in inputs:
                 inputs["route_maneuver_headings"] = heading_transform(
-                    inputs["route_maneuver_headings"], transform_matrix
+                    inputs["route_maneuver_headings"].to(transform_matrix.dtype),
+                    transform_matrix,
                 )
-                inputs["route_maneuver_headings"][~route_valid.bool()] = 0.0
+                inputs["route_maneuver_headings"][route_pad] = 0.0
 
         # static objects xy
         mask = torch.sum(torch.ne(inputs["static_objects"][..., :10], 0), dim=-1) == 0

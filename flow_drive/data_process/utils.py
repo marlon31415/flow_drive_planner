@@ -327,22 +327,26 @@ def route_to_local_frame(batch):
             anchor_state = anchor_state.detach().cpu().numpy()
 
         transformed = np.zeros_like(maneuver_positions, dtype=np.float32)
-        valid = np.zeros(maneuver_positions.shape[:2], dtype=bool)
+
+        # The dataset supplies this. Only compute it here if function is
+        # called from cluster weight computation, where the dataset is not available.
+        supplied_valid = batch.get("route_maneuver_valid")
+        if supplied_valid is not None:
+            if isinstance(supplied_valid, torch.Tensor):
+                valid = supplied_valid.detach().cpu().numpy().astype(bool)
+            else:
+                valid = np.asarray(supplied_valid, dtype=bool)
+        else:
+            valid = ~np.all(maneuver_positions == 0.0, axis=-1)
 
         for b in range(B):
-            coords = maneuver_positions[b]
-
-            # mask zero-padded maneuvers
-            zero_mask = np.all(coords == 0.0, axis=-1)
-            valid[b] = ~zero_mask
-
-            if np.any(~zero_mask):
-                transformed_coords = coordinates_to_local_frame(
-                    coords=coords[~zero_mask],
+            sel = valid[b]
+            if np.any(sel):
+                transformed[b, sel] = coordinates_to_local_frame(
+                    coords=maneuver_positions[b][sel],
                     anchor_state=anchor_state[b],
                     precision=np.float32,
                 )
-                transformed[b, ~zero_mask] = transformed_coords
 
         # Back to torch, same device / dtype as input
         batch["route_maneuver_positions"] = torch.from_numpy(transformed).to(
