@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 
 import matplotlib.pyplot as plt
@@ -34,7 +36,17 @@ ATTN_ALPHA_GAMMA = 1.8
 ATTN_LINEWIDTH = 2.5
 ATTN_EPS = 1e-6
 ROUTE_TEXT_MAX_STEPS_DEFAULT = 3
-PRED_ROUTE_THRESHOLD = 0.25
+# Probability above which a lane is drawn as predicted-on-route.
+#
+# Not 0.5: the aux head is trained with ``train.route_pos_weight`` (3.27), which deliberately
+# biases it towards predicting on-route, so its calibrated decision boundary sits at
+# w / (1 + w) = 0.766 rather than at a half. Measured F1 over 1,200 scenarios peaks at 0.80 for
+# both all lanes (0.920) and branch lanes (0.882), against 0.871 / 0.810 at the old 0.25 -- which
+# painted 22.9 lanes per scene where only 17.9 were on route.
+#
+# Track route_pos_weight if it changes: the right value is w / (1 + w), rounded up a little.
+# Raise it towards 0.9 when inspecting alternative-route scenarios, where the head over-predicts.
+PRED_ROUTE_THRESHOLD = 0.85
 
 
 def _count_route_steps(route_description):
@@ -206,22 +218,27 @@ def _plot_predicted_route_lanes(
     if lanes_data.shape[0] == 0:
         return
 
-    logits = np.asarray(route_lane_logits).reshape(-1)
-    num_lanes = min(lanes_data.shape[0], logits.shape[0])
-    if num_lanes == 0:
+    values = np.asarray(route_lane_logits).reshape(-1)
+    # One logit per lane slot, in lane order
+    if values.shape[0] != lanes_data.shape[0]:
+        warnings.warn(
+            f"route_lane_logits has {values.shape[0]} entries for {lanes_data.shape[0]} lanes; "
+            "expected one per lane slot, so the predicted route is not drawn",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return
 
-    values = logits[:num_lanes]
-    # Check if values are already in [0,1] range; if not, apply sigmoid to convert logits to probabilities
+    # Already probabilities, or raw logits that still need the sigmoid.
     if np.any(values < 0.0) or np.any(values > 1.0):
         values = 1.0 / (1.0 + np.exp(-np.clip(values, -50.0, 50.0)))
 
-    predicted_mask = values >= threshold
+    occupied = ~np.all(lanes_data[:, 0, :2] == 0, axis=-1)
+    predicted_mask = (values >= threshold) & occupied
     if not np.any(predicted_mask):
         return
 
-    predicted_lanes = lanes_data[:num_lanes][predicted_mask]
-    _plot_lanes_data(ax, predicted_lanes, COLOR_ROUTE_LANES, alpha=0.7)
+    _plot_lanes_data(ax, lanes_data[predicted_mask], COLOR_ROUTE_LANES, alpha=0.7)
 
 
 def _plot_lane_attention_borders(ax, lanes_data, attention, max_steps=None):

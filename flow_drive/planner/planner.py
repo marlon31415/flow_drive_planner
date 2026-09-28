@@ -499,11 +499,12 @@ class FlowDrivePlannerWrapper(AbstractPlanner):
                 )
             if (
                 route_lane_logits is not None
-                and route_lane_logits.ndim >= 2
+                and route_lane_logits.ndim == 2
                 and route_lane_logits.shape[0] > 0
             ):
+                # [B, num_lanes] -> [num_lanes], aligned slot-for-slot with inputs["lanes"].
                 inputs_for_plotting["route_lane_logits"] = (
-                    route_lane_logits[0].squeeze(-1).cpu().numpy()
+                    route_lane_logits[0].cpu().numpy()
                 )
             if self._post_process > 0:
                 inputs_for_plotting["ego_plan"] = outputs[index, 0].cpu().numpy()
