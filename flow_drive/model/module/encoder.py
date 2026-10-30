@@ -476,9 +476,10 @@ class LaneFusionEncoder(nn.Module):
         # In addition to route_fusion_binary this enables better gradient flow
         # to the route encoder, since binary route encoding is not the only
         # learning signal anymore.
-        self.route_fused_proj = nn.Linear(channels_mlp_dim, channels_mlp_dim)
-        nn.init.zeros_(self.route_fused_proj.weight)
-        nn.init.zeros_(self.route_fused_proj.bias)
+        if self.route_fusion_binary:
+            self.route_fused_proj = nn.Linear(channels_mlp_dim, channels_mlp_dim)
+            nn.init.zeros_(self.route_fused_proj.weight)
+            nn.init.zeros_(self.route_fused_proj.bias)
 
     def forward(
         self,
@@ -623,9 +624,7 @@ class LaneFusionEncoder(nn.Module):
                 route_maneuver_positions,
                 route_maneuver_headings=route_maneuver_headings,
             )
-            route_encoding = (
-                encoder_output.x
-            )  # [B, n_route_steps, channels_mlp_dim]
+            route_encoding = encoder_output.x  # [B, n_route_steps, channels_mlp_dim]
             route_encoding_mask = encoder_output.steps_mask  # [B, n_route_steps]
 
             lane_tokens = torch.zeros(
@@ -656,9 +655,7 @@ class LaneFusionEncoder(nn.Module):
                 route_maneuver_positions,
                 route_maneuver_headings=route_maneuver_headings,
             )
-            route_encoding = (
-                encoder_output.x
-            )  # [B, n_route_steps, channels_mlp_dim]
+            route_encoding = encoder_output.x  # [B, n_route_steps, channels_mlp_dim]
             route_encoding_mask = encoder_output.steps_mask  # [B, n_route_steps]
 
             lane_tokens = torch.zeros(
