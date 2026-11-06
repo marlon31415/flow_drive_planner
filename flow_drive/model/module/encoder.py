@@ -45,6 +45,7 @@ class Encoder(nn.Module):
             route_cumulative_distance=getattr(
                 config, "route_cumulative_distance", True
             ),
+            route_gated_residual=getattr(config, "route_gated_residual", False),
         )
 
         self.fusion = FusionEncoder(
@@ -387,6 +388,7 @@ class LaneFusionEncoder(nn.Module):
         route_fusion_binary=True,
         route_token_pool="cls",
         route_cumulative_distance=True,
+        route_gated_residual=False,
     ):
         super().__init__()
 
@@ -396,7 +398,7 @@ class LaneFusionEncoder(nn.Module):
         self.route_fusion = route_fusion
         self.route_fusion_binary = route_fusion_binary
         self.route_cumulative_distance = route_cumulative_distance
-
+        self.route_gated_residual = route_gated_residual
         if self.route_fusion not in ["m2r", "r2m"]:
             raise ValueError(
                 f"Unsupported route_fusion='{self.route_fusion}'. Use 'm2r' or 'r2m'."
@@ -408,7 +410,8 @@ class LaneFusionEncoder(nn.Module):
         self.speed_limit_emb = nn.Linear(1, channels_mlp_dim)
         self.unknown_speed_emb = nn.Embedding(1, channels_mlp_dim)
         self.traffic_emb = nn.Linear(4, channels_mlp_dim)
-        self.is_route_emb = nn.Embedding(2, channels_mlp_dim)
+        if self.route_pool_level == "none" or self.route_fusion_binary:
+            self.is_route_emb = nn.Embedding(2, channels_mlp_dim)
         if self.route_pool_level in ["goal", "points"]:
             self.goal_emb = nn.Linear(2, channels_mlp_dim)
 
@@ -476,7 +479,7 @@ class LaneFusionEncoder(nn.Module):
         # In addition to route_fusion_binary this enables better gradient flow
         # to the route encoder, since binary route encoding is not the only
         # learning signal anymore.
-        if self.route_fusion_binary:
+        if self.route_gated_residual:
             self.route_fused_proj = nn.Linear(channels_mlp_dim, channels_mlp_dim)
             nn.init.zeros_(self.route_fused_proj.weight)
             nn.init.zeros_(self.route_fused_proj.bias)
@@ -497,7 +500,7 @@ class LaneFusionEncoder(nn.Module):
         speed_limit: B, P, 1
         has_speed_limit: B, P, 1
         """
-        if self.route_pool_level == "step":
+        if self.route_pool_level == "step" or self.route_pool_level == "points":
             # Skip the "depart" step and cap both inputs at max_route_steps, in lockstep,
             # so route_description and route_maneuver_positions stay aligned downstream.
             if self.route_cumulative_distance:
@@ -695,20 +698,25 @@ class LaneFusionEncoder(nn.Module):
             route_logits_flat[valid_indices] = route_logits_valid  # Fill in valid parts
             route_logits = route_logits_flat.view(B, P)
 
-            # Soft route embedding from logits: interpolate between non-route and route embeddings.
-            if self.route_fusion_binary:
-                route_prob = torch.sigmoid(route_logits_flat[valid_indices]).unsqueeze(
-                    -1
-                )
-                route_embedding = (1.0 - route_prob) * self.is_route_emb.weight[
-                    0
-                ].unsqueeze(0) + route_prob * self.is_route_emb.weight[1].unsqueeze(0)
-                # Keep the fused token as a gated residual.
-                # `x` here is the route-conditioned lane token; x_base is the same token
-                # before any route information. Adding back a gated share of the
-                # difference preserves the binary channel while letting richer route
-                # structure through if it earns its keep.
-                x = x_base + route_embedding + self.route_fused_proj(x - x_base)
+        # Soft route embedding from logits: interpolate between non-route and route embeddings.
+        if self.route_gated_residual:
+            x_gated_residual = self.route_fused_proj(x - x_base)
+            x = x_base + x_gated_residual
+            x_base = x_base + x_gated_residual
+        if self.route_fusion_binary and self.route_aux_loss:
+            route_prob = torch.sigmoid(route_logits_flat[valid_indices]).unsqueeze(-1)
+            route_embedding = (1.0 - route_prob) * self.is_route_emb.weight[
+                0
+            ].unsqueeze(0) + route_prob * self.is_route_emb.weight[1].unsqueeze(0)
+            # Keep the fused token as a gated residual.
+            # `x` here is the route-conditioned lane token; x_base is the same token
+            # before any route information. Adding back a gated share of the
+            # difference preserves the binary channel while letting richer route
+            # structure through if it earns its keep.
+            x = x_base + route_embedding
+
+        if self.route_pool_level == "no":
+            x = x_base  # No route information is added to the lane tokens.
 
         x = self.emb_project(self.norm(x))  # [B * P, hidden_dim]
 

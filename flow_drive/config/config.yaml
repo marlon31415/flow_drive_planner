@@ -41,6 +41,7 @@ encoder:
   use_spatial_attn_bias: False
   route_token_pool: "cls" # "cls" = self-attention over route tokens, "mean" = mean pooling over route tokens
   route_cumulative_distance: True # step distances measured from the ego, not from the previous maneuver
+  route_gated_residual: False
 
 diffuser:
   pred_horizon: 40
